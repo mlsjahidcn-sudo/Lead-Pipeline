@@ -1,0 +1,6 @@
+{
+  "name": "SICA Lead Tracker",
+  "description": "Lead pipeline and tracking system for Study In China Academy (SICA) Bangladesh partner office.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
