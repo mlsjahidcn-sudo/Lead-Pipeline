@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Lead } from '../../types';
 import { useCrm } from '../../context/CrmContext';
 import { Calendar, X, MapPin } from 'lucide-react';
-import { SICA_OFFICE_ADDRESS } from '../../utils/scripts';
 
 interface BookVisitModalProps {
   lead: Lead | null;
@@ -11,7 +10,7 @@ interface BookVisitModalProps {
 }
 
 export const BookVisitModal: React.FC<BookVisitModalProps> = ({ lead, isOpen, onClose }) => {
-  const { bookOfficeVisit, employees } = useCrm();
+  const { bookOfficeVisit, employees, company } = useCrm();
 
   const [date, setDate] = useState(() => {
     // Default tomorrow at 15:00
@@ -61,7 +60,7 @@ export const BookVisitModal: React.FC<BookVisitModalProps> = ({ lead, isOpen, on
           <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-900 flex items-start gap-2">
             <MapPin className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
             <div>
-              <span className="font-semibold">SICA Dhaka Office:</span> {SICA_OFFICE_ADDRESS}
+              <span className="font-semibold">{company.name} Office:</span> {company.office_address}
               <p className="text-blue-700 mt-0.5 text-[11px]">
                 Always invite parents/guardians to attend. Visits convert; chat alone rarely does.
               </p>

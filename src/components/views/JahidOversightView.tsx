@@ -23,7 +23,7 @@ interface JahidOversightViewProps {
 export const JahidOversightView: React.FC<JahidOversightViewProps> = ({
   onSelectLead,
 }) => {
-  const { leads, employees, lostReasons, updateLead, payments } = useCrm();
+  const { leads, employees, lostReasons, updateLead, payments, company } = useCrm();
 
   const [copiedReport, setCopiedReport] = useState(false);
   const now = new Date();
@@ -90,8 +90,8 @@ export const JahidOversightView: React.FC<JahidOversightViewProps> = ({
 
     const totalPaidBdt = payments.reduce((acc, p) => acc + p.amount, 0);
 
-    return `SICA BANGLADESH – DAILY MORNING REPORT
-Prepared for: Jahid Hasan (Academic Director)
+    return `${company.name.toUpperCase()} – DAILY MORNING REPORT
+Prepared for: ${company.executive_sponsor || 'Executive Leadership'}
 Timestamp: ${new Date().toLocaleDateString('en-GB')} 09:30 BST
 
 1. INBOUND & SLA SUMMARY
@@ -99,18 +99,18 @@ Timestamp: ${new Date().toLocaleDateString('en-GB')} 09:30 BST
 - Active SLA Breaches: ${hotLeadsWithoutVisit.length}
 - Total Active Open Pipeline: ${leads.filter((l) => !['lost', 'enrolled', 'paid'].includes(l.stage)).length}
 
-2. CRITICAL ESCALATIONS FOR JAHID
+2. CRITICAL ESCALATIONS
 - Hot leads with no visit booked in 3 days: ${hotLeadsWithoutVisit.length}
 - Completed visit but undecided >7 days: ${visitedUndecided.length}
 - Hot leads marked Lost (needing audit): ${hotLeadsLost.length}
 
 3. FINANCIAL PERFORMANCE
-- Total verified deposits & package fees: ${totalPaidBdt.toLocaleString()} BDT
-- Confirmed Enrolled Students: ${leads.filter((l) => l.stage === 'paid' || l.stage === 'enrolled').length}
+- Total verified deposits & fees: ${totalPaidBdt.toLocaleString()} ${company.currency_code}
+- Confirmed Enrolled Clients: ${leads.filter((l) => l.stage === 'paid' || l.stage === 'enrolled').length}
 
 4. RECOMMENDATIONS
-- Join 1-on-1 parent call for high-budget medical students needing China academic confirmation.
-- Direct manager Tanvir to audit no-show recovery for Gulshan office visits.`;
+- Join 1-on-1 decision-maker call for high-priority leads needing executive confirmation.
+- Direct management to audit no-show recovery for office visits and scheduled consultations.`;
   };
 
   const handleCopyReport = () => {
@@ -124,8 +124,8 @@ Timestamp: ${new Date().toLocaleDateString('en-GB')} 09:30 BST
       stage: 'contacted',
       temperature: 'hot',
       next_action_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-      next_action_note: 'Reopened by Jahid for China director personal review',
-    }, 'Reopened from Lost by Jahid Hasan');
+      next_action_note: 'Reopened by Executive Director for personal review',
+    }, 'Reopened from Lost by Executive Director');
   };
 
   return (
@@ -136,11 +136,11 @@ Timestamp: ${new Date().toLocaleDateString('en-GB')} 09:30 BST
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-5 h-5 text-purple-700" />
             <h1 className="text-base font-bold text-slate-900 tracking-tight">
-              Jahid's Executive Oversight Dashboard
+              {company.name} Executive Oversight Dashboard
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Founder oversight · Hot lead escalations · Lost audits · Grok Bot daily reporting
+            {company.executive_sponsor || 'Director Oversight'} · Hot lead escalations · Lost audits · Daily morning briefing
           </p>
         </div>
 

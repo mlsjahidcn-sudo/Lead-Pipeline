@@ -14,7 +14,7 @@ export const SimulateInboundModal: React.FC<SimulateInboundModalProps> = ({
   onClose,
   onSelectLead,
 }) => {
-  const { simulateInboundLead, employees } = useCrm();
+  const { simulateInboundLead, employees, company } = useCrm();
   const [createdLead, setCreatedLead] = useState<Lead | null>(null);
 
   if (!isOpen) return null;
@@ -60,10 +60,10 @@ export const SimulateInboundModal: React.FC<SimulateInboundModalProps> = ({
                 </div>
                 <div>
                   <div className="text-xs font-semibold text-slate-900 group-hover:text-blue-700">
-                    SICA Website Eligibility Assessment
+                    {company.name} Online Assessment
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    High intent · Student submitted academic results on studyinchina.academy
+                    High intent · Candidate completed profile assessment on {company.website.replace(/^https?:\/\//, '')}
                   </div>
                 </div>
               </div>

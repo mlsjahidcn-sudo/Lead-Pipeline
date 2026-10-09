@@ -2,7 +2,7 @@ import { Lead, LeadTemperature, SlaInfo } from '../types';
 
 /**
  * Normalises Bangladesh mobile numbers to +8801XXXXXXXXX (E.164).
- * Follows exact SICA Bangladesh specification:
+ * Follows exact international & local mobile normalization specification:
  * - 01XXXXXXXXX (11 digits) -> +8801XXXXXXXXX
  * - 8801XXXXXXXXX or 008801XXXXXXXXX -> +8801XXXXXXXXX
  * - +88001XXXXXXXXX -> drop extra 0 -> +8801XXXXXXXXX

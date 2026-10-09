@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead, VisitStatus } from '../../types';
 import { formatBdDateTime } from '../../utils/crm-logic';
-import { SICA_OFFICE_ADDRESS, SICA_GOOGLE_MAPS_LINK } from '../../utils/scripts';
 import {
   Calendar,
   CheckCircle2,
@@ -25,7 +24,7 @@ export const VisitsView: React.FC<VisitsViewProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
 }) => {
-  const { visits, leads, employees, updateVisitStatus } = useCrm();
+  const { visits, leads, employees, updateVisitStatus, company } = useCrm();
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
   const filteredVisits = visits.filter((v) => {
@@ -45,7 +44,7 @@ export const VisitsView: React.FC<VisitsViewProps> = ({
       <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-base font-bold text-slate-900 tracking-tight">
-            SICA Dhaka Office Visit Schedule
+            {company.name} Office Visit Schedule
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Core conversion principle: Visits convert; chats rarely do · Confirm visits day before by 18:00
@@ -56,10 +55,10 @@ export const VisitsView: React.FC<VisitsViewProps> = ({
         <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 p-2.5 rounded-lg flex items-center gap-2">
           <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
           <div>
-            <span className="font-semibold text-slate-800">Office:</span> {SICA_OFFICE_ADDRESS}
+            <span className="font-semibold text-slate-800">Office:</span> {company.office_address}
           </div>
           <a
-            href={SICA_GOOGLE_MAPS_LINK}
+            href={company.google_maps_link}
             target="_blank"
             rel="noopener noreferrer"
             className="text-blue-600 hover:text-blue-800 ml-1 shrink-0 flex items-center gap-0.5 font-medium underline"

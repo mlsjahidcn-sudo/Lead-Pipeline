@@ -26,6 +26,8 @@ import {
   INITIAL_VISITS,
   INITIAL_PAYMENTS,
   INITIAL_STAGE_HISTORY,
+  INITIAL_COMPANY_PROFILES,
+  DEFAULT_COMPANY,
 } from '../data/mockData';
 import {
   normalizeBdPhone,
@@ -33,7 +35,7 @@ import {
   calculateLeadScoreWeight,
   checkDuplicateLead,
 } from '../utils/crm-logic';
-import { LeadScoreWeightResult } from '../types';
+import { LeadScoreWeightResult, CompanyProfile } from '../types';
 
 interface CrmContextType {
   currentEmployee: Employee;
@@ -48,6 +50,14 @@ interface CrmContextType {
   visits: OfficeVisit[];
   payments: Payment[];
   stageHistory: StageHistory[];
+
+  // SaaS Organization & Company Profile
+  company: CompanyProfile;
+  companyPresets: CompanyProfile[];
+  updateCompany: (profile: Partial<CompanyProfile>) => void;
+  switchCompanyPreset: (presetId: string) => void;
+  createCompanyProfile: (newCompany: Omit<CompanyProfile, 'id'>) => void;
+  formatCurrency: (amount: number) => string;
 
   // Action methods
   createLead: (leadData: Partial<Lead>) => { success: boolean; leadId?: string; isDuplicate?: boolean; message?: string; matchedLead?: Lead };
@@ -119,7 +129,7 @@ const CrmContext = createContext<CrmContextType | undefined>(undefined);
 
 export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [employees, setEmployees] = useState<Employee[]>(() => {
-    const saved = localStorage.getItem('sica_crm_employees');
+    const saved = localStorage.getItem('saas_crm_employees') || localStorage.getItem('sica_crm_employees');
     return saved ? JSON.parse(saved) : INITIAL_EMPLOYEES;
   });
 
@@ -131,7 +141,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lostReasons] = useState<LostReason[]>(INITIAL_LOST_REASONS);
 
   const [leads, setLeads] = useState<Lead[]>(() => {
-    const saved = localStorage.getItem('sica_crm_leads');
+    const saved = localStorage.getItem('saas_crm_leads') || localStorage.getItem('sica_crm_leads');
     const rawLeads: Lead[] = saved ? JSON.parse(saved) : INITIAL_LEADS;
     return rawLeads.map((l) => {
       const w = calculateLeadScoreWeight(l, INITIAL_ACTIVITIES, INITIAL_SOURCES).weight;
@@ -143,57 +153,87 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [activities, setActivities] = useState<LeadActivity[]>(() => {
-    const saved = localStorage.getItem('sica_crm_activities');
+    const saved = localStorage.getItem('saas_crm_activities') || localStorage.getItem('sica_crm_activities');
     return saved ? JSON.parse(saved) : INITIAL_ACTIVITIES;
   });
 
   const [tasks, setTasks] = useState<FollowUpTask[]>(() => {
-    const saved = localStorage.getItem('sica_crm_tasks');
+    const saved = localStorage.getItem('saas_crm_tasks') || localStorage.getItem('sica_crm_tasks');
     return saved ? JSON.parse(saved) : INITIAL_TASKS;
   });
 
   const [visits, setVisits] = useState<OfficeVisit[]>(() => {
-    const saved = localStorage.getItem('sica_crm_visits');
+    const saved = localStorage.getItem('saas_crm_visits') || localStorage.getItem('sica_crm_visits');
     return saved ? JSON.parse(saved) : INITIAL_VISITS;
   });
 
   const [payments, setPayments] = useState<Payment[]>(() => {
-    const saved = localStorage.getItem('sica_crm_payments');
+    const saved = localStorage.getItem('saas_crm_payments') || localStorage.getItem('sica_crm_payments');
     return saved ? JSON.parse(saved) : INITIAL_PAYMENTS;
   });
 
   const [stageHistory, setStageHistory] = useState<StageHistory[]>(() => {
-    const saved = localStorage.getItem('sica_crm_stage_history');
+    const saved = localStorage.getItem('saas_crm_stage_history') || localStorage.getItem('sica_crm_stage_history');
     return saved ? JSON.parse(saved) : INITIAL_STAGE_HISTORY;
   });
 
+  // SaaS Company & Organization Profile State
+  const [company, setCompany] = useState<CompanyProfile>(() => {
+    const saved = localStorage.getItem('crm_saas_company');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (_) {}
+    }
+    return DEFAULT_COMPANY;
+  });
+
+  const [companyPresets, setCompanyPresets] = useState<CompanyProfile[]>(() => {
+    const saved = localStorage.getItem('crm_saas_company_presets');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (_) {}
+    }
+    return INITIAL_COMPANY_PROFILES;
+  });
+
+  // Save company to localStorage
+  useEffect(() => {
+    localStorage.setItem('crm_saas_company', JSON.stringify(company));
+  }, [company]);
+
+  useEffect(() => {
+    localStorage.setItem('crm_saas_company_presets', JSON.stringify(companyPresets));
+  }, [companyPresets]);
+
   // Save to localStorage
   useEffect(() => {
-    localStorage.setItem('sica_crm_leads', JSON.stringify(leads));
+    localStorage.setItem('saas_crm_leads', JSON.stringify(leads));
   }, [leads]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_activities', JSON.stringify(activities));
+    localStorage.setItem('saas_crm_activities', JSON.stringify(activities));
   }, [activities]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_tasks', JSON.stringify(tasks));
+    localStorage.setItem('saas_crm_tasks', JSON.stringify(tasks));
   }, [tasks]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_visits', JSON.stringify(visits));
+    localStorage.setItem('saas_crm_visits', JSON.stringify(visits));
   }, [visits]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_payments', JSON.stringify(payments));
+    localStorage.setItem('saas_crm_payments', JSON.stringify(payments));
   }, [payments]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_stage_history', JSON.stringify(stageHistory));
+    localStorage.setItem('saas_crm_stage_history', JSON.stringify(stageHistory));
   }, [stageHistory]);
 
   useEffect(() => {
-    localStorage.setItem('sica_crm_employees', JSON.stringify(employees));
+    localStorage.setItem('saas_crm_employees', JSON.stringify(employees));
   }, [employees]);
 
   // Round-robin assignment helper
@@ -350,6 +390,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       funding_confirmed: leadData.funding_confirmed ?? false,
       parent_involved: leadData.parent_involved ?? false,
       has_passport: leadData.has_passport ?? false,
+      tags: Array.isArray(leadData.tags) ? leadData.tags : [],
       first_contact_at: null,
       next_action_at: leadData.next_action_at || defaultSlaNextAction,
       next_action_note: leadData.next_action_note || 'Initial call & WhatsApp (2h SLA)',
@@ -1076,6 +1117,10 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       funding_confirmed: true,
       parent_involved: true,
       has_passport: true,
+      tags: [
+        channel === 'website_assessment' ? 'Online Assessment' : channel === 'webinar' ? 'Webinar Lead' : 'Social Ads',
+        'Inbound Simulation',
+      ],
     };
 
     const res = createLead(leadData);
@@ -1092,8 +1137,47 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return calculateLeadScoreWeight(lead, activities, sources).weight;
   };
 
+  // SaaS Company & Organization Profile methods
+  const updateCompany = (updates: Partial<CompanyProfile>) => {
+    setCompany((prev) => {
+      const merged = { ...prev, ...updates };
+      setCompanyPresets((presets) =>
+        presets.map((p) => (p.id === prev.id ? merged : p))
+      );
+      return merged;
+    });
+  };
+
+  const switchCompanyPreset = (presetId: string) => {
+    const found = companyPresets.find((p) => p.id === presetId);
+    if (found) {
+      setCompany(found);
+    }
+  };
+
+  const createCompanyProfile = (newCompanyData: Omit<CompanyProfile, 'id'>) => {
+    const id = `comp-${Date.now().toString().slice(-6)}`;
+    const created: CompanyProfile = {
+      ...newCompanyData,
+      id,
+    };
+    setCompanyPresets((prev) => [...prev, created]);
+    setCompany(created);
+  };
+
+  const formatCurrency = (amount: number): string => {
+    return `${amount.toLocaleString()} ${company.currency_code}`;
+  };
+
   // Reset to default
   const resetToDefaultData = () => {
+    localStorage.removeItem('saas_crm_leads');
+    localStorage.removeItem('saas_crm_activities');
+    localStorage.removeItem('saas_crm_tasks');
+    localStorage.removeItem('saas_crm_visits');
+    localStorage.removeItem('saas_crm_payments');
+    localStorage.removeItem('saas_crm_stage_history');
+    localStorage.removeItem('saas_crm_employees');
     localStorage.removeItem('sica_crm_leads');
     localStorage.removeItem('sica_crm_activities');
     localStorage.removeItem('sica_crm_tasks');
@@ -1101,6 +1185,8 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem('sica_crm_payments');
     localStorage.removeItem('sica_crm_stage_history');
     localStorage.removeItem('sica_crm_employees');
+    localStorage.removeItem('crm_saas_company');
+    localStorage.removeItem('crm_saas_company_presets');
 
     const initialWithWeights = INITIAL_LEADS.map((l) => ({
       ...l,
@@ -1115,6 +1201,8 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setStageHistory(INITIAL_STAGE_HISTORY);
     setEmployees(INITIAL_EMPLOYEES);
     setCurrentEmployee(INITIAL_EMPLOYEES[0]);
+    setCompany(DEFAULT_COMPANY);
+    setCompanyPresets(INITIAL_COMPANY_PROFILES);
   };
 
   return (
@@ -1132,6 +1220,12 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         visits,
         payments,
         stageHistory,
+        company,
+        companyPresets,
+        updateCompany,
+        switchCompanyPreset,
+        createCompanyProfile,
+        formatCurrency,
         createLead,
         updateLead,
         logInteraction,

@@ -1,10 +1,84 @@
-import { Employee, LeadSource, LostReason, Lead, LeadActivity, FollowUpTask, OfficeVisit, Payment, StageHistory } from '../types';
+import { Employee, LeadSource, LostReason, Lead, LeadActivity, FollowUpTask, OfficeVisit, Payment, StageHistory, CompanyProfile } from '../types';
+
+export const INITIAL_COMPANY_PROFILES: CompanyProfile[] = [
+  {
+    id: 'comp-apex',
+    name: 'Apex Global Admissions',
+    short_name: 'Apex',
+    slug: 'apex_admissions',
+    tagline: 'Higher Education Advisory & Student Placement CRM',
+    industry: 'Education Consulting',
+    accent_color: 'blue',
+    currency_code: 'BDT',
+    currency_symbol: '৳',
+    phone: '+880 1711-002233',
+    email: 'info@apexadmissions.com',
+    website: 'https://apexadmissions.com',
+    office_address: 'Level 4, Navana Tower, Gulshan-1, Dhaka-1212, Bangladesh',
+    google_maps_link: 'https://maps.google.com/?q=Gulshan-1+Dhaka',
+    webinar_link: 'https://apexadmissions.com/live-webinar',
+    guide_link: 'https://apexadmissions.com/scholarship-guide',
+    receipt_prefix: 'APX-REC',
+    portal_subdomain: 'apex.omnileadscrm.io',
+    plan_tier: 'professional',
+    seat_count: 15,
+    executive_sponsor: 'Jahid Hasan (Director of Operations)',
+  },
+  {
+    id: 'comp-beacon',
+    name: 'Beacon Enterprise Cloud',
+    short_name: 'Beacon',
+    slug: 'beacon_cloud',
+    tagline: 'B2B Software & Enterprise Client Solutions Pipeline',
+    industry: 'B2B Enterprise Software',
+    accent_color: 'indigo',
+    currency_code: 'USD',
+    currency_symbol: '$',
+    phone: '+1 (415) 890-3400',
+    email: 'sales@beaconcloud.io',
+    website: 'https://beaconcloud.io',
+    office_address: 'Suite 1400, 500 Howard Street, San Francisco, CA 94105, USA',
+    google_maps_link: 'https://maps.google.com/?q=500+Howard+Street+San+Francisco',
+    webinar_link: 'https://beaconcloud.io/demo-session',
+    guide_link: 'https://beaconcloud.io/enterprise-solutions-guide',
+    receipt_prefix: 'BCN-INV',
+    portal_subdomain: 'beacon.omnileadscrm.io',
+    plan_tier: 'enterprise',
+    seat_count: 50,
+    executive_sponsor: 'Sarah Jenkins (VP Commercial Sales)',
+  },
+  {
+    id: 'comp-horizon',
+    name: 'Horizon Mobility Partners',
+    short_name: 'Horizon',
+    slug: 'horizon_mobility',
+    tagline: 'Global Residency, Legal & Overseas Advisory Firm',
+    industry: 'Immigration & Legal Advisory',
+    accent_color: 'emerald',
+    currency_code: 'GBP',
+    currency_symbol: '£',
+    phone: '+44 20 7946 0192',
+    email: 'contact@horizonmobility.co.uk',
+    website: 'https://horizonmobility.co.uk',
+    office_address: '45 Berkeley Square, Mayfair, London W1J 5AS, United Kingdom',
+    google_maps_link: 'https://maps.google.com/?q=45+Berkeley+Square+London',
+    webinar_link: 'https://horizonmobility.co.uk/briefing',
+    guide_link: 'https://horizonmobility.co.uk/visa-pathways-guide',
+    receipt_prefix: 'HRZ-DOC',
+    portal_subdomain: 'horizon.omnileadscrm.io',
+    plan_tier: 'professional',
+    seat_count: 25,
+    executive_sponsor: 'Marcus Vance (Managing Partner)',
+  },
+];
+
+export const DEFAULT_COMPANY: CompanyProfile = INITIAL_COMPANY_PROFILES[0];
 
 export const INITIAL_EMPLOYEES: Employee[] = [
   {
     id: 'emp-jahid',
     full_name: 'Jahid Hasan',
-    email: 'jahid@studyinchina.academy',
+    email: 'jahid@apexadmissions.com',
     phone_e164: '+8801711002233',
     role: 'admin',
     is_active: true,
@@ -16,7 +90,7 @@ export const INITIAL_EMPLOYEES: Employee[] = [
   {
     id: 'emp-tanvir',
     full_name: 'Tanvir Ahmed',
-    email: 'tanvir@studyinchina.academy',
+    email: 'tanvir@apexadmissions.com',
     phone_e164: '+8801819223344',
     role: 'manager',
     is_active: true,
@@ -28,7 +102,7 @@ export const INITIAL_EMPLOYEES: Employee[] = [
   {
     id: 'emp-nusrat',
     full_name: 'Nusrat Jahan',
-    email: 'nusrat@studyinchina.academy',
+    email: 'nusrat@apexadmissions.com',
     phone_e164: '+8801715443322',
     role: 'counsellor',
     is_active: true,
@@ -40,7 +114,7 @@ export const INITIAL_EMPLOYEES: Employee[] = [
   {
     id: 'emp-rakib',
     full_name: 'Rakib Hossain',
-    email: 'rakib@studyinchina.academy',
+    email: 'rakib@apexadmissions.com',
     phone_e164: '+8801912334455',
     role: 'counsellor',
     is_active: true,
@@ -52,7 +126,7 @@ export const INITIAL_EMPLOYEES: Employee[] = [
   {
     id: 'emp-farhana',
     full_name: 'Farhana Sultana',
-    email: 'farhana@studyinchina.academy',
+    email: 'farhana@apexadmissions.com',
     phone_e164: '+8801611778899',
     role: 'counsellor',
     is_active: true,
@@ -67,7 +141,7 @@ export const INITIAL_SOURCES: LeadSource[] = [
   {
     id: 'src-assessment',
     channel: 'website_assessment',
-    name: 'SICA Website Eligibility Check',
+    name: 'Website Eligibility Assessment',
     is_active: true,
   },
   {
@@ -93,7 +167,7 @@ export const INITIAL_SOURCES: LeadSource[] = [
   {
     id: 'src-referral',
     channel: 'referral',
-    name: 'SICA Alumni / Enrolled Student Referral',
+    name: 'Alumni / Client Referral',
     is_active: true,
   },
   {
@@ -141,6 +215,7 @@ export const INITIAL_LEADS: Lead[] = [
     first_contact_at: null, // Uncontacted!
     next_action_at: '2026-10-09T08:00:00Z',
     next_action_note: 'Urgent: Make first call within 2h SLA',
+    tags: ['MBBS', 'High Value', 'March Intake', 'Parent VIP'],
     created_at: '2026-10-09T06:05:00Z', // Arrived ~8 mins ago (within SLA!)
     updated_at: '2026-10-09T06:05:00Z',
   },
@@ -171,6 +246,7 @@ export const INITIAL_LEADS: Lead[] = [
     first_contact_at: null,
     next_action_at: '2026-10-09T05:00:00Z', // Breached SLA!
     next_action_note: 'Missed first contact window - SLA breached',
+    tags: ['CSC Scholarship', 'Engineering', 'AI / Data Science'],
     created_at: '2026-10-09T03:15:00Z', // Arrived 3 hours ago!
     updated_at: '2026-10-09T03:15:00Z',
   },
@@ -201,6 +277,7 @@ export const INITIAL_LEADS: Lead[] = [
     first_contact_at: '2026-10-08T11:20:00Z',
     next_action_at: '2026-10-09T10:00:00Z',
     next_action_note: 'Follow up on WhatsApp with Chinese university list & invite to office',
+    tags: ['Engineering', 'Webinar Lead', 'Self-Funded'],
     created_at: '2026-10-08T10:45:00Z',
     updated_at: '2026-10-08T11:20:00Z',
   },
@@ -231,6 +308,7 @@ export const INITIAL_LEADS: Lead[] = [
     first_contact_at: '2026-10-07T08:30:00Z',
     next_action_at: '2026-10-09T11:00:00Z',
     next_action_note: 'Schedule Dhaka office visit with Father (coming from Sylhet)',
+    tags: ['MBBS', 'High Value', 'Referral', 'Parent VIP'],
     created_at: '2026-10-07T08:00:00Z',
     updated_at: '2026-10-08T14:00:00Z',
   },
@@ -260,6 +338,7 @@ export const INITIAL_LEADS: Lead[] = [
     first_contact_at: '2026-10-08T07:00:00Z',
     next_action_at: '2026-10-09T15:00:00Z',
     next_action_note: 'Attend confirmed office visit with student and parents at 3:00 PM',
+    tags: ['CSC Scholarship', 'Engineering', 'Walk-in'],
     created_at: '2026-10-08T06:45:00Z',
     updated_at: '2026-10-08T12:00:00Z',
   },
@@ -765,7 +844,7 @@ export const INITIAL_PAYMENTS: Payment[] = [
     amount: 50000,
     currency: 'BDT',
     paid_at: '2026-10-08T11:00:00Z',
-    method: 'City Bank Deposit (Ref: SICA-DMU-084)',
+    method: 'City Bank Deposit (Ref: APX-DMU-084)',
     receipt_ref: 'REC-2026-10-0084',
     recorded_by: 'emp-nusrat',
     verified_by: 'emp-tanvir',

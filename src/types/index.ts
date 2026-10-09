@@ -115,6 +115,7 @@ export interface Lead {
   lost_note?: string;
   nurture_until?: string;
   duplicate_of?: string;
+  tags?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -235,4 +236,29 @@ export interface LeadScoreWeightResult {
     maxScore: number;
     details: string;
   }[];
+}
+
+export interface CompanyProfile {
+  id: string;
+  name: string;
+  short_name: string;
+  slug: string;
+  tagline: string;
+  industry: string;
+  logo_icon?: string;
+  accent_color: string; // 'blue' | 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber'
+  currency_code: string; // e.g. 'BDT', 'USD', 'EUR', 'GBP'
+  currency_symbol: string; // e.g. '৳', '$', '€', '£'
+  phone: string;
+  email: string;
+  website: string;
+  office_address: string;
+  google_maps_link: string;
+  webinar_link: string;
+  guide_link: string;
+  receipt_prefix: string;
+  portal_subdomain: string;
+  plan_tier: 'starter' | 'professional' | 'enterprise';
+  seat_count: number;
+  executive_sponsor: string;
 }

@@ -36,7 +36,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
   onOpenNewLead,
   onOpenSimulate,
 }) => {
-  const { leads, activities, employees, sources, updateLead, currentEmployee, getLeadScoreWeight } = useCrm();
+  const { leads, activities, employees, sources, updateLead, currentEmployee, getLeadScoreWeight, company } = useCrm();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterOwner, setFilterOwner] = useState('all');
@@ -143,7 +143,8 @@ export const InboxView: React.FC<InboxViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sica_leads_export_${new Date().toISOString().slice(0, 10)}.csv`;
+    const compSlug = (company.slug || 'crm').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    a.download = `${compSlug}_leads_export_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
   };
 

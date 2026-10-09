@@ -10,13 +10,15 @@ interface RecordPaymentModalProps {
 }
 
 export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({ lead, isOpen, onClose }) => {
-  const { recordPayment } = useCrm();
+  const { recordPayment, company } = useCrm();
 
   const [pkg, setPkg] = useState<'complete_admission' | 'guidance'>('complete_admission');
   const [paymentType, setPaymentType] = useState<'deposit' | 'package_fee' | 'instalment'>('deposit');
   const [amount, setAmount] = useState('50000');
-  const [method, setMethod] = useState('Bank Transfer (City Bank)');
-  const [receiptRef, setReceiptRef] = useState(`SICA-BD-${Date.now().toString().slice(-5)}`);
+  const [method, setMethod] = useState('Bank Transfer / Deposit');
+  const [receiptRef, setReceiptRef] = useState(
+    () => `${company.receipt_prefix || 'REC'}-${Date.now().toString().slice(-5)}`
+  );
 
   if (!isOpen || !lead) return null;
 
@@ -30,7 +32,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({ lead, is
       package: pkg,
       paymentType,
       amount: numAmount,
-      currency: 'BDT',
+      currency: company.currency_code || 'BDT',
       method,
       receiptRef,
     });
@@ -86,7 +88,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({ lead, is
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Amount (BDT) *
+                Amount ({company.currency_code}) *
               </label>
               <input
                 type="number"

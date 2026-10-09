@@ -1,12 +1,29 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        try {
+          var _f = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _f;
+            },
+            set: function(v) {
+              _f = v;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (_) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SICA Lead Tracker</title>
-    <meta name="description" content="Lead pipeline and tracking system for Study In China Academy (SICA) Bangladesh partner office." />
-    <meta property="og:title" content="SICA Lead Tracker" />
-    <meta property="og:description" content="Lead pipeline and tracking system for Study In China Academy (SICA) Bangladesh partner office." />
+    <title>OmniLeads SaaS CRM | Enterprise Multi-Tenant Pipeline Platform</title>
+    <meta name="description" content="Enterprise multi-tenant SaaS lead management, pipeline tracking, and conversion CRM platform." />
+    <meta property="og:title" content="OmniLeads SaaS CRM" />
+    <meta property="og:description" content="Enterprise multi-tenant SaaS lead management, pipeline tracking, and conversion CRM platform." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">

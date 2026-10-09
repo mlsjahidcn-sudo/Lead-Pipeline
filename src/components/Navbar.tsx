@@ -24,6 +24,7 @@ import {
   ExternalLink,
   Check,
   Zap,
+  Building2,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -34,6 +35,7 @@ interface NavbarProps {
   onNavigateToTodayTab?: (subFilter?: 'pending' | 'imminent' | 'overdue' | 'completed') => void;
   onSelectLead?: (lead: Lead) => void;
   onOpenScheduler?: () => void;
+  onOpenCompanySettings?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -44,8 +46,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigateToTodayTab,
   onSelectLead,
   onOpenScheduler,
+  onOpenCompanySettings,
 }) => {
-  const { currentEmployee, setCurrentEmployee, employees, tasks, leads, activities, completeTask } = useCrm();
+  const { currentEmployee, setCurrentEmployee, employees, tasks, leads, activities, completeTask, company } = useCrm();
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [taskScope, setTaskScope] = useState<'my' | 'all'>('my');
@@ -81,7 +84,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'today', label: 'Today', icon: CheckSquare },
     { id: 'visits', label: 'Visits', icon: Calendar },
     { id: 'manager', label: 'Manager', icon: Users },
-    { id: 'jahid', label: 'Jahid Oversight', icon: ShieldAlert },
+    { id: 'jahid', label: 'Executive Oversight', icon: ShieldAlert },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
   ];
 
@@ -206,13 +209,27 @@ export const Navbar: React.FC<NavbarProps> = ({
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200">
       {/* Top Bar: Brand, Nav links, and Actions with Today's Tasks Badge */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-        {/* Zone 1: Brand wordmark */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Zone 1: Brand wordmark & Organization Switcher */}
+        <div className="flex items-center gap-2.5 shrink-0">
           <button
             onClick={() => setCurrentTab('inbox')}
-            className="text-left font-bold text-lg tracking-tight text-slate-900 hover:text-slate-700 transition-colors whitespace-nowrap"
+            className="flex items-center gap-2 text-left group cursor-pointer"
+            title={`${company.name} - ${company.tagline}`}
           >
-            SICA Bangladesh <span className="text-blue-600 font-semibold text-sm ml-1">Tracker</span>
+            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white font-bold flex items-center justify-center text-sm shadow-xs group-hover:bg-blue-700 transition-colors">
+              {company.name ? company.name.charAt(0).toUpperCase() : 'A'}
+            </div>
+            <div className="leading-tight">
+              <div className="font-bold text-base tracking-tight text-slate-900 group-hover:text-blue-600 transition-colors whitespace-nowrap flex items-center gap-1.5">
+                <span>{company.name}</span>
+                <span className="px-1.5 py-0.2 text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 rounded font-mono">
+                  SaaS
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono truncate max-w-[140px] xl:max-w-[200px]">
+                {company.portal_subdomain || `${company.slug}.omnileads.io`}
+              </div>
+            </div>
           </button>
         </div>
 
@@ -601,6 +618,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               ))}
             </select>
           </div>
+
+          {/* Company / Organization Profile Button */}
+          <button
+            onClick={onOpenCompanySettings}
+            title={`Organization Settings: customize ${company.name} info, branding & locations`}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Building2 className="w-3.5 h-3.5 text-blue-600" />
+            <span className="hidden md:inline">Company Info</span>
+          </button>
 
           {/* Auto-Scheduler Quick Trigger */}
           {dormantSuggestions.length > 0 && (

@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const { leads, payments, employees, visits, sources } = useCrm();
+  const { leads, payments, employees, visits, sources, company } = useCrm();
 
   const [activeReportTab, setActiveReportTab] = useState<'daily' | 'weekly' | 'tasks' | 'sql' | 'export'>('daily');
   const [copiedSql, setCopiedSql] = useState(false);
@@ -48,6 +48,22 @@ export const ReportsView: React.FC = () => {
   });
 
   const totalPaid = payments.reduce((acc, p) => acc + p.amount, 0);
+
+  // Real-time Executive KPI Summary Metrics for Managers
+  const totalActiveLeads = allPipelineLeads.filter((l) => !['lost', 'enrolled'].includes(l.stage)).length;
+  const hotActiveLeads = allPipelineLeads.filter((l) => !['lost', 'enrolled'].includes(l.stage) && l.temperature === 'hot').length;
+  const newActiveLeads = allPipelineLeads.filter((l) => l.stage === 'new').length;
+
+  const convertedLeadsCount = allPipelineLeads.filter((l) => l.stage === 'paid' || l.stage === 'enrolled').length;
+  const conversionRate = allPipelineLeads.length > 0
+    ? ((convertedLeadsCount / allPipelineLeads.length) * 100).toFixed(1)
+    : '0.0';
+
+  const totalPaymentCollected = totalPaid;
+  const verifiedPaymentsCount = payments.length;
+
+  const attendedVisitsCount = visits.filter((v) => v.status === 'attended').length;
+  const scheduledVisitsCount = visits.filter((v) => v.status === 'booked' || v.status === 'confirmed').length;
 
   // Funnel Stage Counts
   const funnelStages = [
@@ -193,8 +209,9 @@ export const ReportsView: React.FC = () => {
     const link = document.createElement('a');
     const dateStr = new Date().toISOString().slice(0, 10);
     const scopeSlug = label.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const compSlug = (company.slug || 'crm').toLowerCase().replace(/[^a-z0-9]/g, '_');
     link.href = url;
-    link.download = `sica_leads_${scopeSlug}_${dateStr}.csv`;
+    link.download = `${compSlug}_leads_${scopeSlug}_${dateStr}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -204,7 +221,7 @@ export const ReportsView: React.FC = () => {
     setTimeout(() => setHasRecentlyExported(false), 2500);
   };
 
-  const starterSqlScript = `-- SICA Bangladesh Starter Database Schema & Analytics Views
+  const starterSqlScript = `-- ${company.name} Multi-Tenant Starter Database Schema & Analytics Views
 -- Designed for Supabase / PostgreSQL (October 2026)
 
 create type lead_stage as enum (
@@ -345,6 +362,119 @@ where l.temperature = 'hot'
         </div>
       </div>
 
+      {/* Real-time Executive Summary Cards Row for Managers */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Total Active Leads */}
+        <div className="bg-white p-4.5 rounded-xl border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Total Active Leads
+              </span>
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                <Users className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight tabular-nums">
+                {totalActiveLeads}
+              </span>
+              <span className="text-xs text-slate-400 font-mono">
+                / {allPipelineLeads.length} total
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+            <span className="text-slate-500">{newActiveLeads} new inbound</span>
+            <span className="inline-flex items-center gap-1 font-semibold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded text-[11px]">
+              <Flame className="w-3 h-3 text-rose-500 shrink-0" />
+              <span>{hotActiveLeads} Hot</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Card 2: Conversion Rate */}
+        <div className="bg-white p-4.5 rounded-xl border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Conversion Rate
+              </span>
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight tabular-nums">
+                {conversionRate}%
+              </span>
+              <span className="text-xs text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold text-[11px]">
+                Target: 15%+
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+            <span className="text-slate-500">Funnel Outcome</span>
+            <span className="font-mono font-medium text-slate-700">
+              {convertedLeadsCount} of {allPipelineLeads.length} enrolled
+            </span>
+          </div>
+        </div>
+
+        {/* Card 3: Total Payment Collected */}
+        <div className="bg-white p-4.5 rounded-xl border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Total Payment Collected
+              </span>
+              <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                <DollarSign className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight tabular-nums">
+                ৳{totalPaymentCollected.toLocaleString('en-IN')}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+            <span className="text-slate-500">Verified Revenue</span>
+            <span className="font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px]">
+              {verifiedPaymentsCount} transactions
+            </span>
+          </div>
+        </div>
+
+        {/* Card 4: Office Visits Attended */}
+        <div className="bg-white p-4.5 rounded-xl border border-slate-200 shadow-2xs hover:shadow-xs transition-shadow flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Office Visits Attended
+              </span>
+              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+                <Calendar className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold font-mono text-slate-900 tracking-tight tabular-nums">
+                {attendedVisitsCount}
+              </span>
+              <span className="text-xs text-slate-400 font-mono">
+                / {visits.length} scheduled
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+            <span className="text-slate-500">Key Conversion Driver</span>
+            <span className="font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded text-[11px]">
+              {scheduledVisitsCount} upcoming
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Tab 1: Daily Morning Report */}
       {activeReportTab === 'daily' && (
         <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
@@ -352,7 +482,7 @@ where l.temperature = 'hot'
             <div>
               <span className="text-xs font-mono uppercase text-slate-400">Scheduled 09:30 AM Brief</span>
               <h2 className="text-lg font-bold text-slate-900">
-                SICA Bangladesh Daily Executive Snapshot
+                {company.name} Daily Executive Snapshot
               </h2>
             </div>
             <div className="text-right">
@@ -369,7 +499,7 @@ where l.temperature = 'hot'
             <div className="p-4 bg-emerald-50 rounded-lg border border-emerald-200">
               <div className="text-xs font-sans text-emerald-800">Verified Revenue</div>
               <div className="text-2xl font-bold text-emerald-900 mt-1">
-                {totalPaid.toLocaleString()} BDT
+                {totalPaid.toLocaleString()} {company.currency_code}
               </div>
             </div>
 
@@ -663,7 +793,7 @@ where l.temperature = 'hot'
               <span className="text-xs text-slate-500 font-mono">
                 Filename:{' '}
                 <strong className="text-slate-800">
-                  sica_leads_{exportScope}_{new Date().toISOString().slice(0, 10)}.csv
+                  {(company.slug || 'crm').toLowerCase()}_leads_{exportScope}_{new Date().toISOString().slice(0, 10)}.csv
                 </strong>
               </span>
 

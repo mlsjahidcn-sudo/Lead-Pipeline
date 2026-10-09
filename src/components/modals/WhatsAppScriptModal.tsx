@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Lead } from '../../types';
 import { useCrm } from '../../context/CrmContext';
-import { SCRIPT_TEMPLATES, getWhatsAppClickUrl } from '../../utils/scripts';
+import { getScriptTemplates, getWhatsAppClickUrl } from '../../utils/scripts';
 import { X, Send, Copy, Check, MessageSquare } from 'lucide-react';
 
 interface WhatsAppScriptModalProps {
@@ -17,14 +17,16 @@ export const WhatsAppScriptModal: React.FC<WhatsAppScriptModalProps> = ({
   onClose,
   onLoggedActivity,
 }) => {
-  const { currentEmployee, logInteraction } = useCrm();
-  const [selectedTemplateId, setSelectedTemplateId] = useState(SCRIPT_TEMPLATES[0].id);
+  const { currentEmployee, logInteraction, company } = useCrm();
+  const scriptTemplates = useMemo(() => getScriptTemplates(company), [company]);
+
+  const [selectedTemplateId, setSelectedTemplateId] = useState(scriptTemplates[0]?.id || 'first_contact_en');
   const [copied, setCopied] = useState(false);
   const [customText, setCustomText] = useState('');
 
   if (!isOpen || !lead) return null;
 
-  const currentTemplate = SCRIPT_TEMPLATES.find((t) => t.id === selectedTemplateId) || SCRIPT_TEMPLATES[0];
+  const currentTemplate = scriptTemplates.find((t) => t.id === selectedTemplateId) || scriptTemplates[0];
 
   const generatedText = currentTemplate.template({
     studentName: lead.full_name,
@@ -89,7 +91,7 @@ export const WhatsAppScriptModal: React.FC<WhatsAppScriptModalProps> = ({
               Select Script Template
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {SCRIPT_TEMPLATES.map((tmpl) => (
+              {scriptTemplates.map((tmpl) => (
                 <button
                   key={tmpl.id}
                   type="button"

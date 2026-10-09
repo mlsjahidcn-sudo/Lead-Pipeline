@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { normalizeBdPhone, calculateLeadScore, checkDuplicateLead } from '../../utils/crm-logic';
-import { X, AlertTriangle, CheckCircle2, UserPlus, Sparkles } from 'lucide-react';
+import { X, AlertTriangle, CheckCircle2, UserPlus, Sparkles, Tag, Plus } from 'lucide-react';
 import { Lead } from '../../types';
 
 interface NewLeadModalProps {
@@ -9,6 +9,20 @@ interface NewLeadModalProps {
   onClose: () => void;
   onSelectLead?: (lead: Lead) => void;
 }
+
+const POPULAR_TAG_SUGGESTIONS = [
+  'MBBS',
+  'Engineering',
+  'CSC Scholarship',
+  'High Value',
+  'Self-Funded',
+  'Parent VIP',
+  'March Intake',
+  'September Intake',
+  'IELTS 6.5+',
+  'Walk-in',
+  'Webinar Lead',
+];
 
 export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onSelectLead }) => {
   const { createLead, sources, employees, leads } = useCrm();
@@ -30,8 +44,30 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
   const [parentInvolved, setParentInvolved] = useState(true);
   const [hasPassport, setHasPassport] = useState(false);
   const [notes, setNotes] = useState('');
+  const [tags, setTags] = useState<string[]>(['MBBS', 'High Value']);
+  const [customTagInput, setCustomTagInput] = useState('');
 
   if (!isOpen) return null;
+
+  const handleAddTag = (tagToAdd: string) => {
+    const clean = tagToAdd.trim().replace(/^#/, '');
+    if (!clean) return;
+    if (!tags.some((t) => t.toLowerCase() === clean.toLowerCase())) {
+      setTags((prev) => [...prev, clean]);
+    }
+    setCustomTagInput('');
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    setTags((prev) => prev.filter((t) => t !== tagToRemove));
+  };
+
+  const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      handleAddTag(customTagInput);
+    }
+  };
 
   // Real-time phone normalisation check
   const phoneNorm = normalizeBdPhone(phoneRaw);
@@ -79,6 +115,7 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
       funding_confirmed: fundingConfirmed,
       parent_involved: parentInvolved,
       has_passport: hasPassport,
+      tags,
       next_action_note: notes || 'First call & WhatsApp attempt (2h SLA)',
     });
 
@@ -369,6 +406,91 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
               >
                 {scorePreview.temperature}
               </span>
+            </div>
+          </div>
+
+          {/* Custom Tags for Categorization */}
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                <Tag className="w-3.5 h-3.5 text-blue-600" />
+                <span>Custom Categorization Tags</span>
+              </label>
+              <span className="text-[11px] text-slate-400">
+                Type & press Enter or comma to add
+              </span>
+            </div>
+
+            {/* Input & Add button */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={customTagInput}
+                  onChange={(e) => setCustomTagInput(e.target.value)}
+                  onKeyDown={handleTagKeyDown}
+                  placeholder="e.g. VIP Candidate, CSC Full Scholarship, Walk-in..."
+                  className="w-full text-xs px-3 py-1.5 border border-slate-200 rounded-md bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => handleAddTag(customTagInput)}
+                disabled={!customTagInput.trim()}
+                className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-md transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Tag</span>
+              </button>
+            </div>
+
+            {/* Selected Tags list */}
+            {tags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-[11px] text-slate-500 font-medium mr-1">Active Tags:</span>
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 text-blue-700 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                  >
+                    <span>{tag}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveTag(tag)}
+                      className="text-blue-400 hover:text-blue-700 p-0.5 hover:bg-blue-100 rounded-full transition-colors cursor-pointer"
+                      title={`Remove tag ${tag}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Popular Suggestions */}
+            <div className="pt-1.5 border-t border-slate-200/60">
+              <div className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider mb-1.5">
+                Suggested Tags (Click to toggle):
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {POPULAR_TAG_SUGGESTIONS.map((sug) => {
+                  const isSelected = tags.includes(sug);
+                  return (
+                    <button
+                      type="button"
+                      key={sug}
+                      onClick={() => (isSelected ? handleRemoveTag(sug) : handleAddTag(sug))}
+                      className={`text-[11px] px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-2xs font-semibold'
+                          : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50/50'
+                      }`}
+                    >
+                      {isSelected ? `✓ ${sug}` : `+ ${sug}`}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
