@@ -62,9 +62,7 @@ const LeadCard: React.FC<LeadCardProps> = ({
         </div>
         <div className="min-w-0 flex-1">
           <div className="font-semibold text-slate-900 truncate">{lead.full_name}</div>
-          <div className="text-[11px] text-slate-500 truncate">
-            {lead.city} · {data.sourceName || 'Direct'}
-          </div>
+          <div className="text-[11px] text-slate-500 truncate">{lead.city}</div>
         </div>
         <TemperaturePill temperature={lead.temperature} />
         <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />

@@ -91,8 +91,6 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
             </div>
             <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1 flex-wrap min-w-0">
               <span>{lead.city}</span>
-              <span className="text-slate-300">·</span>
-              <span className="text-slate-400">{data.sourceName || 'Direct'}</span>
               {tags.length > 0 && (
                 <>
                   <span className="text-slate-300">·</span>
