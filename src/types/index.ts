@@ -262,3 +262,15 @@ export interface CompanyProfile {
   seat_count: number;
   executive_sponsor: string;
 }
+
+/** WhatsApp quick reply template — persisted in quick_reply_templates (org-scoped). */
+export interface QuickReplyTemplate {
+  id: string;
+  name: string;
+  step: string;
+  language: 'en' | 'bn';
+  purpose: string;
+  /** Body with {{placeholders}} — see renderQuickReply for the token list. */
+  body: string;
+  sortOrder: number;
+}

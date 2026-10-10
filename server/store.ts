@@ -227,6 +227,20 @@ function sanitizeEmployeeUpdate(row: Row): Row {
   };
 }
 
+const QUICK_REPLY_LANGUAGES = ['en', 'bn'] as const;
+
+function sanitizeQuickReply(row: Row): Row {
+  return {
+    id: vUuid(row, 'id', true),
+    name: vText(row, 'name', 200, true),
+    step: vText(row, 'step', 40) ?? '',
+    language: vEnum(row, 'language', QUICK_REPLY_LANGUAGES) ?? 'en',
+    purpose: vText(row, 'purpose', 300) ?? '',
+    body: vText(row, 'body', 4000, true),
+    sort_order: vInt(row, 'sort_order', 0, 9999) ?? 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Literal upsert statements. Each takes ($1 = jsonb rows, $2 = org_id) and
 // unpacks with jsonb_array_elements — column names are static SQL literals.
@@ -360,6 +374,19 @@ FROM (
 ) v
 WHERE e.id = v.id AND e.org_id = $2`;
 
+const UPSERT_QUICK_REPLIES = `
+INSERT INTO public.quick_reply_templates
+  (id, org_id, name, step, language, purpose, body, sort_order)
+SELECT
+  (r->>'id')::uuid, $2::uuid, r->>'name', r->>'step', r->>'language',
+  r->>'purpose', r->>'body', (r->>'sort_order')::integer
+FROM jsonb_array_elements($1::jsonb) AS r
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name, step = EXCLUDED.step, language = EXCLUDED.language,
+  purpose = EXCLUDED.purpose, body = EXCLUDED.body,
+  sort_order = EXCLUDED.sort_order, updated_at = now()
+WHERE public.quick_reply_templates.org_id = $2`;
+
 // ---------------------------------------------------------------------------
 // Wire-format mappers (DB row -> client row)
 // ---------------------------------------------------------------------------
@@ -437,6 +464,12 @@ const mapStageHistory = (r: Row): Row => ({
   changed_by: r.changed_by, changed_at: iso(r.changed_at), note: r.note,
 });
 
+const mapQuickReply = (r: Row): Row => ({
+  id: r.id, name: r.name, step: r.step, language: r.language, purpose: r.purpose,
+  body: r.body, sort_order: r.sort_order,
+  created_at: iso(r.created_at), updated_at: iso(r.updated_at),
+});
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -482,6 +515,7 @@ export interface BootstrapPayload {
   visits: Row[];
   payments: Row[];
   stageHistory: Row[];
+  quickReplies: Row[];
   serverTime: string;
 }
 
@@ -490,69 +524,72 @@ export async function bootstrap(orgId: string, viewer?: Viewer): Promise<Bootstr
   const employeeId = viewer?.employeeId ?? '';
   const params = [orgId, employeeId];
 
-  const client = await pool.connect();
-  try {
-    const [employees, sources, lostReasons, leads, activities, tasks, visits, payments, stageHistory] = await Promise.all([
-      // Counsellors get a names+roles directory only — no colleagues'
-      // emails / phone numbers / auth bindings.
-      scoped
-        ? client.query(
-            'SELECT id, full_name, role, is_active, accepts_new_leads, last_assigned_at, created_at FROM public.employees WHERE org_id = $1 ORDER BY created_at',
-            [orgId]
-          )
-        : client.query('SELECT * FROM public.employees WHERE org_id = $1 ORDER BY created_at', [orgId]),
-      // lead_sources are reference data; return all (they're not org-scoped at the
-      // application level even though the schema carries org_id for tenancy tracking)
-      client.query('SELECT * FROM public.lead_sources ORDER BY created_at'),
-      client.query('SELECT * FROM public.lost_reasons ORDER BY sort_order'),
-      scoped
-        ? client.query('SELECT * FROM public.leads WHERE org_id = $1 AND owner_id = $2 ORDER BY created_at DESC', params)
-        : client.query('SELECT * FROM public.leads WHERE org_id = $1 ORDER BY created_at DESC', [orgId]),
-      scoped
-        ? client.query(
-            'SELECT * FROM public.lead_activities WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY occurred_at DESC',
-            params
-          )
-        : client.query('SELECT * FROM public.lead_activities WHERE org_id = $1 ORDER BY occurred_at DESC', [orgId]),
-      scoped
-        ? client.query('SELECT * FROM public.follow_up_tasks WHERE org_id = $1 AND assigned_to = $2 ORDER BY created_at DESC', params)
-        : client.query('SELECT * FROM public.follow_up_tasks WHERE org_id = $1 ORDER BY created_at DESC', [orgId]),
-      scoped
-        ? client.query(
-            'SELECT * FROM public.office_visits WHERE org_id = $1 AND (counsellor_id = $2 OR lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2)) ORDER BY scheduled_at DESC',
-            params
-          )
-        : client.query('SELECT * FROM public.office_visits WHERE org_id = $1 ORDER BY scheduled_at DESC', [orgId]),
-      scoped
-        ? client.query(
-            'SELECT * FROM public.payments WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY paid_at DESC',
-            params
-          )
-        : client.query('SELECT * FROM public.payments WHERE org_id = $1 ORDER BY paid_at DESC', [orgId]),
-      scoped
-        ? client.query(
-            'SELECT * FROM public.stage_history WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY changed_at DESC LIMIT 2000',
-            params
-          )
-        : client.query('SELECT * FROM public.stage_history WHERE org_id = $1 ORDER BY changed_at DESC LIMIT 2000', [orgId]),
-    ]);
-    return {
-      orgId,
-      viewer: viewer ? { employeeId: viewer.employeeId, role: viewer.role } : undefined,
-      employees: employees.rows.map(mapEmployee),
-      sources: sources.rows.map(mapSource),
-      lostReasons: lostReasons.rows.map(mapLostReason),
-      leads: leads.rows.map(mapLead),
-      activities: activities.rows.map(mapActivity),
-      tasks: tasks.rows.map(mapTask),
-      visits: visits.rows.map(mapVisit),
-      payments: payments.rows.map(mapPayment),
-      stageHistory: stageHistory.rows.map(mapStageHistory),
-      serverTime: new Date().toISOString(),
-    };
-  } finally {
-    client.release();
-  }
+  // Read-only independent queries issued through pool.query so they run in
+  // parallel across pool connections instead of queueing on one client
+  // (Promise.all on a single PoolClient serializes — slow with big tables and
+  // deprecated as of pg@8.10).
+  const [employees, sources, lostReasons, leads, activities, tasks, visits, payments, stageHistory, quickReplies] = await Promise.all([
+    // Counsellors get a names+roles directory only — no colleagues'
+    // emails / phone numbers / auth bindings.
+    scoped
+      ? pool.query(
+          'SELECT id, full_name, role, is_active, accepts_new_leads, last_assigned_at, created_at FROM public.employees WHERE org_id = $1 ORDER BY created_at',
+          [orgId]
+        )
+      : pool.query('SELECT * FROM public.employees WHERE org_id = $1 ORDER BY created_at', [orgId]),
+    // lead_sources are reference data; return all (they're not org-scoped at the
+    // application level even though the schema carries org_id for tenancy tracking)
+    pool.query('SELECT * FROM public.lead_sources ORDER BY created_at'),
+    pool.query('SELECT * FROM public.lost_reasons ORDER BY sort_order'),
+    scoped
+      ? pool.query('SELECT * FROM public.leads WHERE org_id = $1 AND owner_id = $2 ORDER BY created_at DESC', params)
+      : pool.query('SELECT * FROM public.leads WHERE org_id = $1 ORDER BY created_at DESC', [orgId]),
+    scoped
+      ? pool.query(
+          'SELECT * FROM public.lead_activities WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY occurred_at DESC',
+          params
+        )
+      : pool.query('SELECT * FROM public.lead_activities WHERE org_id = $1 ORDER BY occurred_at DESC', [orgId]),
+    scoped
+      ? pool.query('SELECT * FROM public.follow_up_tasks WHERE org_id = $1 AND assigned_to = $2 ORDER BY created_at DESC', params)
+      : pool.query('SELECT * FROM public.follow_up_tasks WHERE org_id = $1 ORDER BY created_at DESC', [orgId]),
+    scoped
+      ? pool.query(
+          'SELECT * FROM public.office_visits WHERE org_id = $1 AND (counsellor_id = $2 OR lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2)) ORDER BY scheduled_at DESC',
+          params
+        )
+      : pool.query('SELECT * FROM public.office_visits WHERE org_id = $1 ORDER BY scheduled_at DESC', [orgId]),
+    scoped
+      ? pool.query(
+          'SELECT * FROM public.payments WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY paid_at DESC',
+          params
+        )
+      : pool.query('SELECT * FROM public.payments WHERE org_id = $1 ORDER BY paid_at DESC', [orgId]),
+    scoped
+      ? pool.query(
+          'SELECT * FROM public.stage_history WHERE org_id = $1 AND lead_id IN (SELECT id FROM public.leads WHERE org_id = $1 AND owner_id = $2) ORDER BY changed_at DESC LIMIT 2000',
+          params
+        )
+      : pool.query('SELECT * FROM public.stage_history WHERE org_id = $1 ORDER BY changed_at DESC LIMIT 2000', [orgId]),
+    // quick replies are org content — every role reads them (counsellors
+    // use them; only admins/managers may write them, enforced in applySync)
+    pool.query('SELECT * FROM public.quick_reply_templates WHERE org_id = $1 ORDER BY sort_order, created_at', [orgId]),
+  ]);
+  return {
+    orgId,
+    viewer: viewer ? { employeeId: viewer.employeeId, role: viewer.role } : undefined,
+    employees: employees.rows.map(mapEmployee),
+    sources: sources.rows.map(mapSource),
+    lostReasons: lostReasons.rows.map(mapLostReason),
+    leads: leads.rows.map(mapLead),
+    activities: activities.rows.map(mapActivity),
+    tasks: tasks.rows.map(mapTask),
+    visits: visits.rows.map(mapVisit),
+    payments: payments.rows.map(mapPayment),
+    stageHistory: stageHistory.rows.map(mapStageHistory),
+    quickReplies: quickReplies.rows.map(mapQuickReply),
+    serverTime: new Date().toISOString(),
+  };
 }
 
 export interface SyncPayload {
@@ -563,6 +600,7 @@ export interface SyncPayload {
     office_visits?: Row[];
     payments?: Row[];
     employees?: Row[];
+    quick_replies?: Row[];
   };
 }
 
@@ -578,9 +616,9 @@ const MAX_ROWS_PER_TABLE = 500;
 export async function applySync(userId: string, orgId: string, payload: SyncPayload, viewer?: Viewer): Promise<SyncResponse> {
   const startedAt = new Date();
   const scoped = viewer?.role === 'counsellor';
-  const { leads = [], lead_activities = [], follow_up_tasks = [], office_visits = [], payments = [], employees = [] } = payload.upserts ?? {};
+  const { leads = [], lead_activities = [], follow_up_tasks = [], office_visits = [], payments = [], employees = [], quick_replies = [] } = payload.upserts ?? {};
 
-  for (const [name, rows] of Object.entries({ leads, lead_activities, follow_up_tasks, office_visits, payments, employees })) {
+  for (const [name, rows] of Object.entries({ leads, lead_activities, follow_up_tasks, office_visits, payments, employees, quick_replies })) {
     if (!Array.isArray(rows)) throw new ValidationError(`upserts.${name}: expected array`);
     if (rows.length > MAX_ROWS_PER_TABLE) throw new ValidationError(`upserts.${name}: too many rows (${rows.length} > ${MAX_ROWS_PER_TABLE})`);
     for (const row of rows) {
@@ -594,6 +632,12 @@ export async function applySync(userId: string, orgId: string, payload: SyncPayl
   const visitRows = office_visits.map(sanitizeVisit);
   const paymentRows = payments.map(sanitizePayment);
   const employeeRows = employees.map(sanitizeEmployeeUpdate);
+  const quickReplyRows = quick_replies.map(sanitizeQuickReply);
+
+  // Quick replies are org-wide content; only admins/managers may change them.
+  if (scoped && quickReplyRows.length) {
+    throw new ValidationError('quick_replies: only managers/admins can edit quick replies');
+  }
 
   return withUserTx<SyncResponse>(userId, async (client) => {
     // -----------------------------------------------------------------
@@ -666,6 +710,7 @@ export async function applySync(userId: string, orgId: string, payload: SyncPayl
     if (visitRows.length) await client.query(UPSERT_VISITS, [JSON.stringify(visitRows), orgId]);
     if (paymentRows.length) await client.query(UPSERT_PAYMENTS, [JSON.stringify(paymentRows), orgId]);
     if (employeeRowsToWrite.length) await client.query(UPDATE_EMPLOYEES, [JSON.stringify(employeeRowsToWrite), orgId]);
+    if (quickReplyRows.length) await client.query(UPSERT_QUICK_REPLIES, [JSON.stringify(quickReplyRows), orgId]);
 
     // authoritative refresh: DB triggers may have adjusted score / phones /
     // stage history while applying the changeset

@@ -64,6 +64,18 @@ ALTER TABLE public.leads
     await client.query('INSERT INTO public._migrations (name) VALUES ($1)', ['003_query_performance_indexes']);
     console.log('applied: 003_query_performance_indexes');
   }
+
+  const already4 = await client.query('SELECT 1 FROM public._migrations WHERE name = $1', ['004_quick_reply_templates']);
+  if (already4.rowCount && already4.rowCount > 0) {
+    console.log('skip (already applied): 004_quick_reply_templates');
+  } else {
+    // Migration 004 — editable WhatsApp quick replies (org-scoped). Rows are
+    // created lazily: clients fall back to code defaults until a row is saved.
+    await client.query('CREATE TABLE IF NOT EXISTS public.quick_reply_templates (id uuid PRIMARY KEY, org_id uuid NOT NULL, name text NOT NULL, step text NOT NULL DEFAULT \'\', language text NOT NULL DEFAULT \'en\', purpose text NOT NULL DEFAULT \'\', body text NOT NULL, sort_order integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_quick_replies_org ON public.quick_reply_templates (org_id, sort_order)');
+    await client.query('INSERT INTO public._migrations (name) VALUES ($1)', ['004_quick_reply_templates']);
+    console.log('applied: 004_quick_reply_templates');
+  }
 } finally {
   client.release();
   await pool.end();

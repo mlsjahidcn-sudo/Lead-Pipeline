@@ -15,6 +15,7 @@ import {
   ActivityOutcome,
   VisitStatus,
   TaskPriority,
+  QuickReplyTemplate,
 } from '../types';
 import {
   calculateLeadScoreWeight,
@@ -33,7 +34,7 @@ const genId = (): string =>
         return v.toString(16);
       });
 import { LeadScoreWeightResult, CompanyProfile } from '../types';
-import { api, type BootstrapPayload, type SyncResponse } from '../api';
+import { api, type BootstrapPayload, type SyncResponse, type WireQuickReply } from '../api';
 import { authClient } from '../auth';
 
 // The current code base keeps the local `Lead.activity_*`-shaped objects in
@@ -52,6 +53,7 @@ type SyncBuffer = {
   office_visits: Set<string>;
   payments: Set<string>;
   employees: Set<string>;
+  quick_replies: Set<string>;
 };
 
 const emptyBuffer = (): SyncBuffer => ({
@@ -61,6 +63,7 @@ const emptyBuffer = (): SyncBuffer => ({
   office_visits: new Set(),
   payments: new Set(),
   employees: new Set(),
+  quick_replies: new Set(),
 });
 
 interface CrmContextType {
@@ -152,6 +155,10 @@ interface CrmContextType {
   reassignLead: (leadId: string, newOwnerId: string) => void;
   toggleCounsellorAcceptingLeads: (employeeId: string) => void;
   mergeLeads: (survivingLeadId: string, duplicateLeadId: string) => void;
+  /** Saved (org-wide, DB-persisted) WhatsApp quick replies. */
+  quickReplies: QuickReplyTemplate[];
+  /** Upsert an edited quick reply (admin/manager only — server-enforced). */
+  saveQuickReply: (template: QuickReplyTemplate) => void;
   bulkImportLeads: (rows: Partial<Lead>[]) => Promise<{ inserted: number; failed: Array<{ row: number; error: string }> }>;
   resetToDefaultData: () => void;
   getLeadScoreWeight: (lead: Lead) => LeadScoreWeightResult;
@@ -241,10 +248,10 @@ const LogOutIcon = () => (
 // Minimum-viable company profile (kept in memory; not persisted to the DB)
 const DEFAULT_COMPANY: CompanyProfile = {
   id: 'comp-default',
-  name: 'MHR Lead Pipeline',
-  short_name: 'MHR',
+  name: 'MHR Education',
+  short_name: 'MHR Education',
   slug: 'mhr',
-  tagline: 'Lead pipeline for global education consultancies',
+  tagline: 'Study abroad counselling & admissions support',
   industry: 'Education consulting',
   accent_color: 'blue',
   currency_code: 'BDT',
@@ -252,10 +259,10 @@ const DEFAULT_COMPANY: CompanyProfile = {
   phone: '',
   email: '',
   website: '',
-  office_address: '',
-  google_maps_link: '',
-  webinar_link: '',
-  guide_link: '',
+  office_address: 'Level 4, Navana Tower, Gulshan-1, Dhaka-1212, Bangladesh',
+  google_maps_link: 'https://maps.google.com/?q=Navana+Tower+Gulshan+Dhaka',
+  webinar_link: 'https://mhreducation.com.bd/live-webinar',
+  guide_link: 'https://mhreducation.com.bd/scholarship-guide',
   receipt_prefix: 'MHR-',
   portal_subdomain: 'mhr',
   plan_tier: 'professional',
@@ -385,6 +392,16 @@ const wireToStageHistory = (w: BootstrapPayload['stageHistory'][number]): StageH
   note: w.note ?? undefined,
 });
 
+const wireToQuickReply = (w: WireQuickReply): QuickReplyTemplate => ({
+  id: w.id,
+  name: w.name,
+  step: w.step,
+  language: w.language === 'bn' ? 'bn' : 'en',
+  purpose: w.purpose,
+  body: w.body,
+  sortOrder: w.sort_order,
+});
+
 export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -425,6 +442,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [visits, setVisits] = useState<OfficeVisit[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [stageHistory, setStageHistory] = useState<StageHistory[]>([]);
+  const [quickReplies, setQuickReplies] = useState<QuickReplyTemplate[]>([]);
   const [company] = useState<CompanyProfile>(DEFAULT_COMPANY);
   const [companyPresets] = useState<CompanyProfile[]>(INITIAL_PRESETS);
 
@@ -449,6 +467,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setVisits(data.visits.map(wireToVisit));
       setPayments(data.payments.map(wireToPayment));
       setStageHistory(data.stageHistory.map(wireToStageHistory));
+      setQuickReplies((data.quickReplies ?? []).map(wireToQuickReply));
 
       // Resolve currentEmployee from the server-stated viewer identity.
       // Counsellor-scoped employees rows omit user_id, so matching by session
@@ -536,7 +555,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // exact row to send here, then call flushSync. flushSync prefers these
   // stamped rows over the React-state closure, so the network payload always
   // reflects the user's intent — even when setLeads hasn't re-rendered yet.
-  type UpKeys = 'leads' | 'lead_activities' | 'follow_up_tasks' | 'office_visits' | 'payments' | 'employees';
+  type UpKeys = 'leads' | 'lead_activities' | 'follow_up_tasks' | 'office_visits' | 'payments' | 'employees' | 'quick_replies';
   const pendingUpserts = useRef<{ [K in UpKeys]: Map<string, any> }>({
     leads: new Map(),
     lead_activities: new Map(),
@@ -544,6 +563,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     office_visits: new Map(),
     payments: new Map(),
     employees: new Map(),
+    quick_replies: new Map(),
   });
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
@@ -573,9 +593,11 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const visitsDirty = [...buf.office_visits];
     const paymentsDirty = [...buf.payments];
     const employeesDirty = [...buf.employees];
+    const quickRepliesDirty = [...buf.quick_replies];
     if (
       !leadsDirty.length && !activitiesDirty.length && !tasksDirty.length &&
-      !visitsDirty.length && !paymentsDirty.length && !employeesDirty.length
+      !visitsDirty.length && !paymentsDirty.length && !employeesDirty.length &&
+      !quickRepliesDirty.length
     ) return;
 
     // reset buffer before sending so new mutations during the sync land in a
@@ -614,10 +636,11 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const visitRows = pick('office_visits', visitsDirty, visits);
     const payRows = pick('payments', paymentsDirty, payments);
     const empRows = pick('employees', employeesDirty, employees);
+    const quickReplyRows = pick('quick_replies', quickRepliesDirty, quickReplies);
     // Consume the stamped rows that are being sent (so they don't leak into
     // the next flush of unrelated mutations).
-    (['leads','lead_activities','follow_up_tasks','office_visits','payments','employees'] as const).forEach((k) => {
-      const sent = (k === 'leads' ? leadsRows : k === 'lead_activities' ? actRows : k === 'follow_up_tasks' ? taskRows : k === 'office_visits' ? visitRows : k === 'payments' ? payRows : empRows) ?? [];
+    (['leads','lead_activities','follow_up_tasks','office_visits','payments','employees','quick_replies'] as const).forEach((k) => {
+      const sent = (k === 'leads' ? leadsRows : k === 'lead_activities' ? actRows : k === 'follow_up_tasks' ? taskRows : k === 'office_visits' ? visitRows : k === 'payments' ? payRows : k === 'employees' ? empRows : quickReplyRows) ?? [];
       for (const r of sent) pendingUpserts.current[k].delete((r as { id: string }).id);
     });
 
@@ -631,6 +654,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             office_visits: visitRows,
             payments: payRows,
             employees: empRows,
+            quick_replies: quickReplyRows,
           },
         };
         const res: SyncResponse = await api.sync(payload);
@@ -669,18 +693,19 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           office_visits: new Set([...buffer.current.office_visits, ...visitsDirty]),
           payments: new Set([...buffer.current.payments, ...paymentsDirty]),
           employees: new Set([...buffer.current.employees, ...employeesDirty]),
+          quick_replies: new Set([...buffer.current.quick_replies, ...quickRepliesDirty]),
         };
       } finally {
         inFlight.current = null;
       }
     })();
     await inFlight.current;
-  }, [leads, activities, tasks, visits, payments, employees]);
+  }, [leads, activities, tasks, visits, payments, employees, quickReplies]);
 
   // flush on tab close so we don't drop the last write
   useEffect(() => {
     const handler = () => {
-      if (buffer.current.leads.size || buffer.current.lead_activities.size || buffer.current.follow_up_tasks.size || buffer.current.office_visits.size || buffer.current.payments.size || buffer.current.employees.size) {
+      if (buffer.current.leads.size || buffer.current.lead_activities.size || buffer.current.follow_up_tasks.size || buffer.current.office_visits.size || buffer.current.payments.size || buffer.current.employees.size || buffer.current.quick_replies.size) {
         // best-effort; the network call may not finish
         void flushSync();
       }
@@ -1386,6 +1411,34 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [currentEmployee, markDirty]
   );
 
+  // Quick replies: org-wide templates. Saved rows live in the DB
+  // (quick_reply_templates); UI merges them over the code defaults by id.
+  // Uses the same stamped-row side-channel as reassignLead so the exact
+  // edited body ships even before setQuickReplies commits, then flushes
+  // immediately (the modal closes right after saving).
+  const saveQuickReply = useCallback(
+    (template: QuickReplyTemplate) => {
+      const wireRow = {
+        id: template.id,
+        name: template.name,
+        step: template.step,
+        language: template.language,
+        purpose: template.purpose,
+        body: template.body,
+        sort_order: template.sortOrder,
+      };
+      pendingUpserts.current.quick_replies.set(template.id, wireRow);
+      setQuickReplies((prev) => {
+        const map = new Map(prev.map((t) => [t.id, t]));
+        map.set(template.id, template);
+        return [...map.values()];
+      });
+      markDirty('quick_replies', template.id);
+      void flushSync();
+    },
+    [markDirty, flushSync]
+  );
+
   const reassignLead = useCallback(
     (leadId: string, newOwnerId: string) => {
       const nowIso = new Date().toISOString();
@@ -1670,6 +1723,8 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reassignLead,
     toggleCounsellorAcceptingLeads,
     mergeLeads,
+    quickReplies,
+    saveQuickReply,
     bulkImportLeads,
     resetToDefaultData,
     getLeadScoreWeight,
@@ -1683,6 +1738,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     createLead, updateLead, logInteraction, completeTask, reopenTask, updateTaskPriority, addQuickNote,
     scheduleFollowUpTask, batchScheduleFollowUpTasks, bookOfficeVisit, updateVisitStatus,
     recordPayment, verifyPayment, reassignLead, toggleCounsellorAcceptingLeads, mergeLeads,
+    quickReplies, saveQuickReply,
     bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight, getLeadActivities,
   ]);
 

@@ -137,6 +137,18 @@ export type WireStageHistory = {
   note: string | null;
 };
 
+export type WireQuickReply = {
+  id: string;
+  name: string;
+  step: string;
+  language: string;
+  purpose: string;
+  body: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type BootstrapPayload = {
   orgId: string;
   // Server-stated identity of the requesting viewer — the authoritative way
@@ -151,6 +163,7 @@ export type BootstrapPayload = {
   visits: WireVisit[];
   payments: WirePayment[];
   stageHistory: WireStageHistory[];
+  quickReplies: WireQuickReply[];
   serverTime: string;
 };
 
