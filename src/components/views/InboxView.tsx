@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead, LeadStage, LeadTemperature } from '../../types';
 import {
@@ -34,7 +34,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
   onOpenWhatsAppScript,
   onOpenNewLead,
 }) => {
-  const { leads, activities, employees, sources, updateLead, currentEmployee, getLeadScoreWeight, company } = useCrm();
+  const { leads, employees, sources, updateLead, currentEmployee, getLeadScoreWeight, getLeadActivities, company } = useCrm();
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,8 +46,9 @@ export const InboxView: React.FC<InboxViewProps> = ({
   const [filterOverdueOnly, setFilterOverdueOnly] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'new' | 'hot' | 'overdue' | 'open' | 'paid'>('all');
 
-  // Filter leads
-  const filteredLeads = leads.filter((lead) => {
+  // Filter leads — memoized so typing in the search box re-runs one cheap
+  // pass instead of also re-running every per-row score computation below.
+  const filteredLeads = useMemo(() => leads.filter((lead) => {
     // Exclude archived duplicates
     if (lead.duplicate_of) return false;
 
@@ -95,7 +96,24 @@ export const InboxView: React.FC<InboxViewProps> = ({
     }
 
     return true;
-  });
+  }), [leads, searchQuery, activeTab, filterOverdueOnly, filterOwner, filterSource, filterTemp, filterStage, filterWeight, getLeadScoreWeight]);
+
+  // Row-render lookups as Map (avoid employees.find / sources.find per row)
+  const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
+  const sourceById = useMemo(() => new Map(sources.map((s) => [s.id, s])), [sources]);
+  // Dormancy badge per lead, computed in one pass per activities change.
+  const dormantInfoByLeadId = useMemo(() => {
+    const map = new Map<string, { daysDormant: number; isDormant: boolean }>();
+    for (const lead of leads) {
+      const { lastContactedAt } = getLeadLastContacted(lead, getLeadActivities(lead.id));
+      const daysDormant = calculateDaysDormant(lastContactedAt);
+      map.set(lead.id, {
+        daysDormant,
+        isDormant: daysDormant >= 3 && !['lost', 'enrolled'].includes(lead.stage),
+      });
+    }
+    return map;
+  }, [leads, getLeadActivities]);
 
   // Export CSV helper
   const handleExportCsv = () => {
@@ -147,11 +165,17 @@ export const InboxView: React.FC<InboxViewProps> = ({
     a.click();
   };
 
-  // Metrics summary
-  const totalOpen = leads.filter((l) => !['lost', 'enrolled', 'paid'].includes(l.stage)).length;
-  const totalHot = leads.filter((l) => l.temperature === 'hot' && l.stage !== 'lost').length;
-  const totalOverdue = leads.filter((l) => isNextActionOverdue(l)).length;
-  const totalNew = leads.filter((l) => l.stage === 'new').length;
+  // Metrics summary — single pass over leads
+  const { totalOpen, totalHot, totalOverdue, totalNew } = useMemo(() => {
+    let open = 0, hot = 0, overdue = 0, fresh = 0;
+    for (const l of leads) {
+      if (!['lost', 'enrolled', 'paid'].includes(l.stage)) open++;
+      if (l.temperature === 'hot' && l.stage !== 'lost') hot++;
+      if (isNextActionOverdue(l)) overdue++;
+      if (l.stage === 'new') fresh++;
+    }
+    return { totalOpen: open, totalHot: hot, totalOverdue: overdue, totalNew: fresh };
+  }, [leads]);
 
   return (
     <div className="space-y-4">
@@ -405,14 +429,14 @@ export const InboxView: React.FC<InboxViewProps> = ({
                 </tr>
               ) : (
                 filteredLeads.map((lead) => {
-                  const owner = employees.find((e) => e.id === lead.owner_id);
-                  const source = sources.find((s) => s.id === lead.source_id);
+                  const owner = employeeById.get(lead.owner_id);
+                  const source = sourceById.get(lead.source_id);
                   const sla = calculateSlaInfo(lead.created_at, lead.first_contact_at);
                   const isOverdue = isNextActionOverdue(lead);
 
-                  const { lastContactedAt } = getLeadLastContacted(lead, activities);
-                  const daysDormant = calculateDaysDormant(lastContactedAt);
-                  const isDormant = daysDormant >= 3 && !['lost', 'enrolled'].includes(lead.stage);
+                  const dormant = dormantInfoByLeadId.get(lead.id);
+                  const daysDormant = dormant?.daysDormant ?? 0;
+                  const isDormant = dormant?.isDormant ?? false;
 
                   return (
                     <tr

@@ -156,6 +156,8 @@ interface CrmContextType {
   resetToDefaultData: () => void;
   getLeadScoreWeight: (lead: Lead) => LeadScoreWeightResult;
   calculateLeadWeight: (lead: Lead) => number;
+  /** Per-lead activity slice from the memoized index — O(1) per call. */
+  getLeadActivities: (leadId: string) => LeadActivity[];
 }
 
 const CrmContext = createContext<CrmContextType | undefined>(undefined);
@@ -1596,8 +1598,33 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // no-op: data lives in the database now
   }, []);
 
-  const getLeadScoreWeight = useCallback((lead: Lead): LeadScoreWeightResult => calculateLeadScoreWeight(lead, activities, sources), [activities, sources]);
-  const calculateLeadWeight = useCallback((lead: Lead): number => calculateLeadScoreWeight(lead, activities, sources).weight, [activities, sources]);
+  // One-pass index of activities per lead. Views call getLeadScoreWeight /
+  // getLeadActivities per row per render; without this index each call
+  // scanned the entire activities array (O(leads × activities) per render —
+  // the main source of tab-switch lag with real data volumes).
+  const activitiesByLeadId = useMemo(() => {
+    const map = new Map<string, LeadActivity[]>();
+    for (const a of activities) {
+      const list = map.get(a.lead_id);
+      if (list) list.push(a);
+      else map.set(a.lead_id, [a]);
+    }
+    return map;
+  }, [activities]);
+
+  const getLeadActivities = useCallback(
+    (leadId: string): LeadActivity[] => activitiesByLeadId.get(leadId) ?? [],
+    [activitiesByLeadId]
+  );
+
+  const getLeadScoreWeight = useCallback(
+    (lead: Lead): LeadScoreWeightResult => calculateLeadScoreWeight(lead, activitiesByLeadId.get(lead.id) ?? [], sources),
+    [activitiesByLeadId, sources]
+  );
+  const calculateLeadWeight = useCallback(
+    (lead: Lead): number => calculateLeadScoreWeight(lead, activitiesByLeadId.get(lead.id) ?? [], sources).weight,
+    [activitiesByLeadId, sources]
+  );
 
   // surface the sync error as a separate field (already declared above the gate)
   const clearSyncError = useCallback(() => setSyncError(null), []);
@@ -1647,6 +1674,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     resetToDefaultData,
     getLeadScoreWeight,
     calculateLeadWeight,
+    getLeadActivities,
   }), [
     loading, displayError, isAuthenticated, signOut, syncError, clearSyncError,
     currentEmployee, setCurrentEmployee, employees, sources, lostReasons,
@@ -1655,7 +1683,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     createLead, updateLead, logInteraction, completeTask, reopenTask, updateTaskPriority, addQuickNote,
     scheduleFollowUpTask, batchScheduleFollowUpTasks, bookOfficeVisit, updateVisitStatus,
     recordPayment, verifyPayment, reassignLead, toggleCounsellorAcceptingLeads, mergeLeads,
-    bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight,
+    bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight, getLeadActivities,
   ]);
 
   // Render the gate instead of the children while the session is still

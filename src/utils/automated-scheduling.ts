@@ -88,12 +88,21 @@ export function getLeadLastContacted(
   lastActivitySummary?: string;
   lastActivityType?: ActivityType;
 } {
-  const leadActivities = activities
-    .filter((act) => act.lead_id === lead.id && act.activity_type !== 'system')
-    .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
+  // Single pass instead of filter+sort: callers may pass the full activities
+  // array, so avoiding the O(n log n) sort with Date allocations keeps this
+  // cheap enough to call per lead per render.
+  let latest: LeadActivity | null = null;
+  let latestTime = -Infinity;
+  for (const act of activities) {
+    if (act.lead_id !== lead.id || act.activity_type === 'system') continue;
+    const t = new Date(act.occurred_at).getTime();
+    if (t > latestTime) {
+      latestTime = t;
+      latest = act;
+    }
+  }
 
-  if (leadActivities.length > 0) {
-    const latest = leadActivities[0];
+  if (latest) {
     return {
       lastContactedAt: latest.occurred_at,
       contactSource: 'activity',
@@ -282,6 +291,19 @@ export function findDormantLeadsNeedingFollowUp(
   const employeeMap = new Map<string, string>();
   employees.forEach((emp) => employeeMap.set(emp.id, emp.full_name));
 
+  // Group activities by lead once so the per-lead loop below stays O(1) per
+  // lookup instead of scanning the whole activities array for every lead.
+  const actsByLead = new Map<string, LeadActivity[]>();
+  for (const act of activities) {
+    const list = actsByLead.get(act.lead_id);
+    if (list) list.push(act);
+    else actsByLead.set(act.lead_id, [act]);
+  }
+  const leadIdsWithOpenTask = new Set<string>();
+  for (const t of tasks) {
+    if (t.status === 'open') leadIdsWithOpenTask.add(t.lead_id);
+  }
+
   const suggestions: AutomatedTaskSuggestion[] = [];
 
   for (const lead of leads) {
@@ -292,13 +314,11 @@ export function findDormantLeadsNeedingFollowUp(
       continue;
     }
 
-    const { lastContactedAt, contactSource } = getLeadLastContacted(lead, activities);
+    const { lastContactedAt, contactSource } = getLeadLastContacted(lead, actsByLead.get(lead.id) ?? []);
     const daysDormant = calculateDaysDormant(lastContactedAt);
 
     if (daysDormant >= thresholdDays) {
-      const hasOpenTask = tasks.some(
-        (t) => t.lead_id === lead.id && t.status === 'open'
-      );
+      const hasOpenTask = leadIdsWithOpenTask.has(lead.id);
       const counsellorName = employeeMap.get(lead.owner_id) || 'Unassigned';
 
       const suggestion = generateSuggestionForLead(

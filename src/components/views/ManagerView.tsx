@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead } from '../../types';
 import { calculateSlaInfo, formatBdDateTime, isNextActionOverdue } from '../../utils/crm-logic';
@@ -35,6 +35,10 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
 
   const [reassignModalLead, setReassignModalLead] = useState<Lead | null>(null);
   const [selectedTargetOwner, setSelectedTargetOwner] = useState(employees[0]?.id || '');
+
+  // Row-render lookups as Maps (avoid leads.find / employees.find per row)
+  const leadById = useMemo(() => new Map(leads.map((l) => [l.id, l])), [leads]);
+  const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
 
   // 1. SLA Breaches: Uncontacted leads where 2h SLA elapsed
   const slaBreaches = leads.filter((lead) => {
@@ -268,8 +272,8 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
               </div>
             ) : (
               upcomingVisits.map((vis) => {
-                const lead = leads.find((l) => l.id === vis.lead_id);
-                const counsellor = employees.find((e) => e.id === vis.counsellor_id);
+                const lead = leadById.get(vis.lead_id);
+                const counsellor = employeeById.get(vis.counsellor_id);
                 if (!lead) return null;
 
                 return (

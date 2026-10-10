@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead, FollowUpTask, TaskPriority } from '../../types';
 import { formatBdDateTime, calculateSlaInfo } from '../../utils/crm-logic';
@@ -67,8 +67,16 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
   // Filter tasks for counsellor
   const isAll = selectedCounsellorId === 'all';
-  const counsellorTasks = tasks.filter((t) => (isAll ? true : t.assigned_to === selectedCounsellorId));
-  const counsellorLeads = leads.filter((l) => (isAll ? true : l.owner_id === selectedCounsellorId));
+  const counsellorTasks = useMemo(
+    () => tasks.filter((t) => (isAll ? true : t.assigned_to === selectedCounsellorId)),
+    [tasks, isAll, selectedCounsellorId]
+  );
+  const counsellorLeads = useMemo(
+    () => leads.filter((l) => (isAll ? true : l.owner_id === selectedCounsellorId)),
+    [leads, isAll, selectedCounsellorId]
+  );
+  // Lead lookup for task/visit rows — Map instead of leads.find per row.
+  const leadById = useMemo(() => new Map(leads.map((l) => [l.id, l])), [leads]);
 
   const now = new Date();
   const todayStr = now.toISOString().slice(0, 10);
@@ -505,7 +513,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
             </div>
           ) : (
             displayTasks.map((task) => {
-              const lead = leads.find((l) => l.id === task.lead_id);
+              const lead = leadById.get(task.lead_id);
               if (!lead) return null;
 
               const deadline = getDeadlineIndicator(task.due_at);
@@ -756,7 +764,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
             </div>
           ) : (
             todayVisits.map((vis) => {
-              const lead = leads.find((l) => l.id === vis.lead_id);
+              const lead = leadById.get(vis.lead_id);
               if (!lead) return null;
               return (
                 <div

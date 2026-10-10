@@ -59,7 +59,6 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
 }) => {
   const {
     leads,
-    activities,
     stageHistory,
     tasks,
     visits,
@@ -75,6 +74,7 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
     scheduleFollowUpTask,
     currentEmployee,
     getLeadScoreWeight,
+    getLeadActivities,
   } = useCrm();
 
   // Find target lead
@@ -83,7 +83,7 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
 
   // Check dormancy (no engagement for >= 3 days)
   const dormancyInfo = lead
-    ? getLeadLastContacted(lead, activities)
+    ? getLeadLastContacted(lead, getLeadActivities(lead.id))
     : { lastContactedAt: '', contactSource: 'created' as const };
   const daysDormant = lead ? calculateDaysDormant(dormancyInfo.lastContactedAt) : 0;
   const isDormant = daysDormant >= 3 && lead && !['lost', 'enrolled'].includes(lead.stage);
@@ -140,7 +140,7 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
   const isOverdue = isNextActionOverdue(lead);
 
   // Lead child records
-  const leadActivities = activities.filter((a) => a.lead_id === lead.id);
+  const leadActivities = getLeadActivities(lead.id);
   const leadHistory = stageHistory.filter((h) => h.lead_id === lead.id);
   const leadTasks = tasks.filter((t) => t.lead_id === lead.id);
   const leadVisits = visits.filter((v) => v.lead_id === lead.id);

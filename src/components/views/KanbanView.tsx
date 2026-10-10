@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead, LeadStage } from '../../types';
 import {
@@ -53,7 +53,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onOpenBookVisit,
   onOpenRecordPayment,
 }) => {
-  const { leads, activities, employees, updateLead, getLeadScoreWeight, currentEmployee } = useCrm();
+  const { leads, employees, updateLead, getLeadScoreWeight, getLeadActivities, currentEmployee } = useCrm();
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -141,8 +141,26 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     return true;
   };
 
-  const totalNonDuplicate = leads.filter((l) => !l.duplicate_of).length;
-  const totalMatchingLeads = leads.filter(matchLead).length;
+  const totalNonDuplicate = useMemo(() => leads.filter((l) => !l.duplicate_of).length, [leads]);
+  // Run the filter ONCE and reuse for every column + the counter below.
+  // Previously matchLead executed for every lead × 8 columns (plus the count
+  // and the top-score metric) on every render, each call potentially scoring
+  // the lead against the whole activities array.
+  const matchingLeads = useMemo(() => leads.filter(matchLead), [leads, searchQuery, filterStage, filterOwner, filterTemp, filterWeight, getLeadScoreWeight]);
+  const totalMatchingLeads = matchingLeads.length;
+  const topScoreCount = useMemo(
+    () => leads.filter((l) => !l.duplicate_of && (l.score_weight || getLeadScoreWeight(l).weight) >= 8).length,
+    [leads, getLeadScoreWeight]
+  );
+  const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
+  const dormantInfoByLeadId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const lead of leads) {
+      const { lastContactedAt } = getLeadLastContacted(lead, getLeadActivities(lead.id));
+      map.set(lead.id, calculateDaysDormant(lastContactedAt));
+    }
+    return map;
+  }, [leads, getLeadActivities]);
   const isFilterActive =
     searchQuery.trim() !== '' ||
     filterStage !== 'all' ||
@@ -179,9 +197,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           </div>
           <div className="px-2.5 py-1 bg-indigo-50 border border-indigo-200 rounded-md">
             <span className="text-indigo-700 font-sans mr-1.5">Top Score (8-10):</span>
-            <strong className="text-indigo-900">
-              {leads.filter((l) => !l.duplicate_of && (l.score_weight || getLeadScoreWeight(l).weight) >= 8).length}
-            </strong>
+            <strong className="text-indigo-900">{topScoreCount}</strong>
           </div>
           <div className="px-2.5 py-1 bg-rose-50 border border-rose-200 rounded-md">
             <span className="text-rose-700 font-sans mr-1.5">Hot Leads:</span>
@@ -319,8 +335,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       {/* Columns Container */}
       <div className="flex gap-4 overflow-x-auto pb-6 pt-1">
         {COLUMNS.map((col) => {
-          const colLeads = leads.filter((l) => {
-            if (!matchLead(l)) return false;
+          const colLeads = matchingLeads.filter((l) => {
             if (col.id === 'consultation_booked') {
               return l.stage === 'consultation_booked' || l.stage === 'consultation_done';
             }
@@ -373,12 +388,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   </div>
                 ) : (
                   colLeads.map((lead) => {
-                    const owner = employees.find((e) => e.id === lead.owner_id);
+                    const owner = employeeById.get(lead.owner_id);
                     const isOverdue = isNextActionOverdue(lead);
                     const wResult = getLeadScoreWeight(lead);
 
-                    const { lastContactedAt } = getLeadLastContacted(lead, activities);
-                    const daysDormant = calculateDaysDormant(lastContactedAt);
+                    const daysDormant = dormantInfoByLeadId.get(lead.id) ?? 0;
                     const isDormant = daysDormant >= 3 && !['lost', 'enrolled'].includes(lead.stage);
 
                     return (
