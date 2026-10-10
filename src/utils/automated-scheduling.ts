@@ -1,6 +1,79 @@
 import { Lead, LeadActivity, FollowUpTask, Employee, AutomatedTaskSuggestion, TaskPriority, ActivityType } from '../types';
 
 /**
+ * Compute a sensible due time for a follow-up task.
+ *
+ * Rules (all times in Asia/Dhaka business hours 10:00–19:00, Sun–Thu):
+ *  - If it's currently before 17:00 on a working day, the due time is now + 3 hours
+ *    (clamped to 19:00) — gives the counsellor a meaningful chunk of the day to act.
+ *  - If it's after 17:00 on a working day, push to next working day at 10:00.
+ *  - If Friday (BD's weekend-equivalent) or Sat/Sun → next working day at 10:00.
+ *  - The result is an ISO 8601 UTC string ready to drop into a `due_at` column.
+ *
+ * Note: `Date` works in the browser's local timezone. We use the BD offset
+ * (UTC+6) to interpret wall-clock hours; this matches the team's working day
+ * even if a user is travelling.
+ */
+export function suggestDueAt(now: Date = new Date()): string {
+  // Convert "now" to Asia/Dhaka wall-clock components
+  const dhakaMs = now.getTime() + 6 * 60 * 60 * 1000; // UTC+6
+  const dhaka = new Date(dhakaMs);
+  const dayOfWeek = dhaka.getUTCDay(); // 0=Sun, 5=Fri, 6=Sat
+  const hour = dhaka.getUTCHours();
+
+  // Helper: convert a Dhaka wall-clock (y/m/d hh:mm) to a UTC Date
+  const dhakaToUtc = (y: number, m: number, d: number, hh: number, mm: number): Date => {
+    const utcMs = Date.UTC(y, m, d, hh, mm) - 6 * 60 * 60 * 1000;
+    return new Date(utcMs);
+  };
+
+  const isWorking = (d: number): boolean => d >= 0 && d <= 4; // Sun(0)–Thu(4)
+  const advanceDays = (currentDay: number, currentHour: number): number => {
+    if (isWorking(currentDay)) {
+      if (currentHour < 17) return 0;
+      return 1;
+    }
+    if (currentDay === 5) return 2; // Fri → Sun
+    if (currentDay === 6) return 1; // Sat → Sun
+    return 1;
+  };
+
+  const dayShift = advanceDays(dayOfWeek, hour);
+  // Skip weekend days defensively
+  let finalShift = dayShift;
+  const targetDhaka = new Date(dhaka.getTime() + dayShift * 24 * 60 * 60 * 1000);
+  const targetDayOfWeek = targetDhaka.getUTCDay();
+  if (!isWorking(targetDayOfWeek)) {
+    finalShift = dayShift + (8 - targetDayOfWeek); // jump forward to next Sunday
+  }
+
+  let dueDhaka: Date;
+  if (dayShift === 0 && hour < 17) {
+    // Same working day, +3 hours, clamped to 19:00 BD
+    const target = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+    const dueDhakaMs = target.getTime() + 6 * 60 * 60 * 1000;
+    const dueDhakaDate = new Date(dueDhakaMs);
+    if (dueDhakaDate.getUTCHours() >= 19) {
+      // Clamp to today's 19:00 BD
+      const today19Dhaka = new Date(dhaka);
+      today19Dhaka.setUTCHours(19, 0, 0, 0);
+      dueDhaka = new Date(today19Dhaka.getTime() - 6 * 60 * 60 * 1000);
+    } else {
+      dueDhaka = target;
+    }
+  } else {
+    // Next working day at 10:00 BD
+    const target = new Date(dhaka.getTime() + finalShift * 24 * 60 * 60 * 1000);
+    const y = target.getUTCFullYear();
+    const m = target.getUTCMonth();
+    const d = target.getUTCDate();
+    dueDhaka = dhakaToUtc(y, m, d, 10, 0);
+  }
+
+  return dueDhaka.toISOString();
+}
+
+/**
  * Determines the last contacted timestamp for a lead based on:
  * 1. Most recent logged engagement activity (call, whatsapp, sms, email, meeting, etc.)
  * 2. Or lead.first_contact_at
@@ -76,7 +149,10 @@ export function generateSuggestionForLead(
   counsellorName: string,
   hasOpenTask: boolean
 ): AutomatedTaskSuggestion {
-  const roundedDays = Math.max(3, Math.floor(daysDormant));
+  // Use the real dormancy (floored); "Day 3" floor was misleading at 5/7d
+  // thresholds. Caller already gated daysDormant >= thresholdDays so we know
+  // it's at least that many days.
+  const roundedDays = Math.max(1, Math.floor(daysDormant));
   const degree = lead.target_degree || 'Chinese University Degree';
   const programme = lead.target_programme ? ` (${lead.target_programme})` : '';
 
@@ -169,10 +245,8 @@ export function generateSuggestionForLead(
     priority = 'low';
   }
 
-  // Suggested due date (suggest today at 11:00 or 15:00 local time, or +3 hours)
-  const now = new Date();
-  const due = new Date(now.getTime() + 2 * 60 * 60 * 1000); // 2 hours from now
-  const suggestedDueAt = due.toISOString();
+  // Suggested due time: business-hours aware, BD-timezone, weekend-skipping.
+  const suggestedDueAt = suggestDueAt();
 
   return {
     leadId: lead.id,
@@ -211,8 +285,10 @@ export function findDormantLeadsNeedingFollowUp(
   const suggestions: AutomatedTaskSuggestion[] = [];
 
   for (const lead of leads) {
-    // Exclude terminal stages and duplicates
-    if (['lost', 'enrolled'].includes(lead.stage) || lead.duplicate_of) {
+    // Exclude terminal/excluded stages and duplicates.
+    // 'nurture' is excluded too — per STAGE_CONFIG it's for 30-90 day follow-ups
+    // and showing it in a 3-day-dormant scheduler list is wrong.
+    if (['lost', 'enrolled', 'nurture'].includes(lead.stage) || lead.duplicate_of) {
       continue;
     }
 

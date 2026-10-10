@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Employee,
   LeadSource,
@@ -17,27 +17,60 @@ import {
   TaskPriority,
 } from '../types';
 import {
-  INITIAL_EMPLOYEES,
-  INITIAL_SOURCES,
-  INITIAL_LOST_REASONS,
-  INITIAL_LEADS,
-  INITIAL_ACTIVITIES,
-  INITIAL_TASKS,
-  INITIAL_VISITS,
-  INITIAL_PAYMENTS,
-  INITIAL_STAGE_HISTORY,
-  INITIAL_COMPANY_PROFILES,
-  DEFAULT_COMPANY,
-} from '../data/mockData';
-import {
-  normalizeBdPhone,
-  calculateLeadScore,
   calculateLeadScoreWeight,
   checkDuplicateLead,
+  normalizeBdPhone,
 } from '../utils/crm-logic';
+
+/** Server requires strict UUIDs for every client-generated row id. */
+const genId = (): string =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : // Fallback for very old runtimes; RFC4122 v4
+      'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
 import { LeadScoreWeightResult, CompanyProfile } from '../types';
+import { api, type BootstrapPayload, type SyncResponse } from '../api';
+import { authClient } from '../auth';
+
+// The current code base keeps the local `Lead.activity_*`-shaped objects in
+// sync with the wire types. The bootstrap payload returns UUIDs everywhere
+// already, so a direct cast works.
+type BootstrapEmployee = BootstrapPayload['employees'][number];
+type BootstrapLead = BootstrapPayload['leads'][number];
+
+// Sync buffer: track IDs that changed since the last successful sync so we
+// only re-send the diff. The server is authoritative, so optimistic state
+// is replaced on response.
+type SyncBuffer = {
+  leads: Set<string>;
+  lead_activities: Set<string>;
+  follow_up_tasks: Set<string>;
+  office_visits: Set<string>;
+  payments: Set<string>;
+  employees: Set<string>;
+};
+
+const emptyBuffer = (): SyncBuffer => ({
+  leads: new Set(),
+  lead_activities: new Set(),
+  follow_up_tasks: new Set(),
+  office_visits: new Set(),
+  payments: new Set(),
+  employees: new Set(),
+});
 
 interface CrmContextType {
+  loading: boolean;
+  error: string | null;
+  isAuthenticated: boolean;
+  signOut: () => Promise<void>;
+  syncError: string | null;
+  clearSyncError: () => void;
+
   currentEmployee: Employee;
   setCurrentEmployee: (employee: Employee) => void;
   employees: Employee[];
@@ -51,7 +84,7 @@ interface CrmContextType {
   payments: Payment[];
   stageHistory: StageHistory[];
 
-  // SaaS Organization & Company Profile
+  // SaaS Organization & Company Profile (kept as in-memory only; not in DB)
   company: CompanyProfile;
   companyPresets: CompanyProfile[];
   updateCompany: (profile: Partial<CompanyProfile>) => void;
@@ -59,7 +92,7 @@ interface CrmContextType {
   createCompanyProfile: (newCompany: Omit<CompanyProfile, 'id'>) => void;
   formatCurrency: (amount: number) => string;
 
-  // Action methods
+  // Action methods (signatures unchanged from before)
   createLead: (leadData: Partial<Lead>) => { success: boolean; leadId?: string; isDuplicate?: boolean; message?: string; matchedLead?: Lead };
   updateLead: (id: string, updates: Partial<Lead>, stageChangeNote?: string) => boolean;
   logInteraction: (data: {
@@ -119,7 +152,7 @@ interface CrmContextType {
   reassignLead: (leadId: string, newOwnerId: string) => void;
   toggleCounsellorAcceptingLeads: (employeeId: string) => void;
   mergeLeads: (survivingLeadId: string, duplicateLeadId: string) => void;
-  simulateInboundLead: (channel: 'website_assessment' | 'webinar' | 'facebook_ads') => Lead;
+  bulkImportLeads: (rows: Partial<Lead>[]) => Promise<{ inserted: number; failed: Array<{ row: number; error: string }> }>;
   resetToDefaultData: () => void;
   getLeadScoreWeight: (lead: Lead) => LeadScoreWeightResult;
   calculateLeadWeight: (lead: Lead) => number;
@@ -127,206 +160,654 @@ interface CrmContextType {
 
 const CrmContext = createContext<CrmContextType | undefined>(undefined);
 
-export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [employees, setEmployees] = useState<Employee[]>(() => {
-    const saved = localStorage.getItem('saas_crm_employees') || localStorage.getItem('sica_crm_employees');
-    return saved ? JSON.parse(saved) : INITIAL_EMPLOYEES;
-  });
-
-  const [currentEmployee, setCurrentEmployee] = useState<Employee>(() => {
-    return employees.find((e) => e.id === 'emp-jahid') || employees[0];
-  });
-
-  const [sources] = useState<LeadSource[]>(INITIAL_SOURCES);
-  const [lostReasons] = useState<LostReason[]>(INITIAL_LOST_REASONS);
-
-  const [leads, setLeads] = useState<Lead[]>(() => {
-    const saved = localStorage.getItem('saas_crm_leads') || localStorage.getItem('sica_crm_leads');
-    const rawLeads: Lead[] = saved ? JSON.parse(saved) : INITIAL_LEADS;
-    return rawLeads.map((l) => {
-      const w = calculateLeadScoreWeight(l, INITIAL_ACTIVITIES, INITIAL_SOURCES).weight;
-      return {
-        ...l,
-        score_weight: l.score_weight || w,
-      };
+/**
+ * Gate shown by CrmProvider while the session is still being resolved. Renders
+ * either a loading spinner, the sign-in screen, or the "no employee bound"
+ * warning — without exposing the rest of the children to a null
+ * currentEmployee. The children (CrmApp and its descendants) only mount once
+ * a real Employee is available.
+ */
+const BootstrapGate: React.FC<{
+  loading: boolean;
+  isAuthenticated: boolean;
+  error: string | null;
+  signOut: () => Promise<void>;
+}> = ({ loading, isAuthenticated, error, signOut }) => {
+  const [SignInScreen, setSignInScreen] = useState<React.ComponentType<{ initialMode?: 'sign-in' | 'sign-up'; onAuthed: () => void }> | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    import('../components/SignInScreen').then((m) => {
+      if (mounted) setSignInScreen(() => m.SignInScreen);
     });
-  });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
-  const [activities, setActivities] = useState<LeadActivity[]>(() => {
-    const saved = localStorage.getItem('saas_crm_activities') || localStorage.getItem('sica_crm_activities');
-    return saved ? JSON.parse(saved) : INITIAL_ACTIVITIES;
-  });
-
-  const [tasks, setTasks] = useState<FollowUpTask[]>(() => {
-    const saved = localStorage.getItem('saas_crm_tasks') || localStorage.getItem('sica_crm_tasks');
-    return saved ? JSON.parse(saved) : INITIAL_TASKS;
-  });
-
-  const [visits, setVisits] = useState<OfficeVisit[]>(() => {
-    const saved = localStorage.getItem('saas_crm_visits') || localStorage.getItem('sica_crm_visits');
-    return saved ? JSON.parse(saved) : INITIAL_VISITS;
-  });
-
-  const [payments, setPayments] = useState<Payment[]>(() => {
-    const saved = localStorage.getItem('saas_crm_payments') || localStorage.getItem('sica_crm_payments');
-    return saved ? JSON.parse(saved) : INITIAL_PAYMENTS;
-  });
-
-  const [stageHistory, setStageHistory] = useState<StageHistory[]>(() => {
-    const saved = localStorage.getItem('saas_crm_stage_history') || localStorage.getItem('sica_crm_stage_history');
-    return saved ? JSON.parse(saved) : INITIAL_STAGE_HISTORY;
-  });
-
-  // SaaS Company & Organization Profile State
-  const [company, setCompany] = useState<CompanyProfile>(() => {
-    const saved = localStorage.getItem('crm_saas_company');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (_) {}
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 font-sans">
+        <div className="text-slate-600 text-sm">Loading workspace…</div>
+      </div>
+    );
+  }
+  if (!isAuthenticated) {
+    if (!SignInScreen) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 font-sans">
+          <div className="text-slate-600 text-sm">Preparing sign-in…</div>
+        </div>
+      );
     }
-    return DEFAULT_COMPANY;
-  });
+    return <SignInScreen onAuthed={() => window.location.reload()} />;
+  }
+  // authenticated but no employee bound to this user
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
+      <div className="max-w-md bg-white border border-amber-200 rounded-lg p-6 text-amber-900 space-y-3">
+        <div className="flex items-center gap-2 font-semibold">
+          <AlertTriangleIcon /> Your account is not linked to a CRM workspace yet
+        </div>
+        <p className="text-sm">{error || 'Ask an admin to bind your Neon Auth account to an employees row.'}</p>
+        <button
+          onClick={() => signOut()}
+          className="inline-flex items-center gap-2 text-sm font-medium text-amber-900 hover:text-amber-700"
+        >
+          <LogOutIcon /> Sign out
+        </button>
+      </div>
+    </div>
+  );
+};
 
-  const [companyPresets, setCompanyPresets] = useState<CompanyProfile[]>(() => {
-    const saved = localStorage.getItem('crm_saas_company_presets');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (_) {}
+const AlertTriangleIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
+const LogOutIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
+// Minimum-viable company profile (kept in memory; not persisted to the DB)
+const DEFAULT_COMPANY: CompanyProfile = {
+  id: 'comp-default',
+  name: 'MHR Lead Pipeline',
+  short_name: 'MHR',
+  slug: 'mhr',
+  tagline: 'Lead pipeline for global education consultancies',
+  industry: 'Education consulting',
+  accent_color: 'blue',
+  currency_code: 'BDT',
+  currency_symbol: '৳',
+  phone: '',
+  email: '',
+  website: '',
+  office_address: '',
+  google_maps_link: '',
+  webinar_link: '',
+  guide_link: '',
+  receipt_prefix: 'MHR-',
+  portal_subdomain: 'mhr',
+  plan_tier: 'professional',
+  seat_count: 5,
+  executive_sponsor: '',
+};
+
+const INITIAL_PRESETS: CompanyProfile[] = [DEFAULT_COMPANY];
+
+const idToEmployee = (w: BootstrapEmployee): Employee => ({
+  id: w.id,
+  full_name: w.full_name,
+  email: w.email,
+  phone_e164: w.phone_e164 ?? '',
+  role: w.role,
+  is_active: w.is_active,
+  accepts_new_leads: w.accepts_new_leads,
+  last_assigned_at: w.last_assigned_at,
+  created_at: w.created_at,
+  title: w.title ?? '',
+});
+
+const wireToLead = (w: BootstrapLead): Lead => ({
+  id: w.id,
+  full_name: w.full_name,
+  phone_raw: w.phone_raw ?? '',
+  phone_e164: w.phone_e164 ?? '',
+  whatsapp_e164: w.whatsapp_e164 ?? '',
+  email: w.email ?? '',
+  city: w.city ?? '',
+  country: w.country,
+  source_id: w.source_id ?? '',
+  source_ref: w.source_ref ?? '',
+  owner_id: w.owner_id ?? '',
+  stage: w.stage as LeadStage,
+  temperature: w.temperature as LeadTemperature,
+  score: w.score,
+  score_weight: w.score_weight ?? 5,
+  education_level: w.education_level ?? '',
+  last_result: w.last_result ?? '',
+  target_degree: w.target_degree ?? '',
+  target_programme: w.target_programme ?? '',
+  target_intake: w.target_intake ?? '',
+  english_level: w.english_level ?? '',
+  funding_confirmed: !!w.funding_confirmed,
+  parent_involved: !!w.parent_involved,
+  has_passport: !!w.has_passport,
+  first_contact_at: w.first_contact_at,
+  next_action_at: w.next_action_at,
+  next_action_note: w.next_action_note ?? '',
+  lost_reason_id: w.lost_reason_id ?? undefined,
+  lost_note: w.lost_note ?? undefined,
+  nurture_until: w.nurture_until ?? undefined,
+  duplicate_of: w.duplicate_of ?? undefined,
+  tags: Array.isArray(w.tags) ? w.tags : [],
+  created_at: w.created_at,
+  updated_at: w.updated_at,
+});
+
+const wireToActivity = (w: BootstrapPayload['activities'][number]): LeadActivity => ({
+  id: w.id,
+  lead_id: w.lead_id,
+  employee_id: w.employee_id ?? '',
+  activity_type: w.activity_type as ActivityType,
+  direction: (w.direction ?? undefined) as 'outbound' | 'inbound' | undefined,
+  outcome: (w.outcome ?? undefined) as ActivityOutcome,
+  summary: w.summary,
+  next_action_at: w.next_action_at ?? undefined,
+  next_action_note: w.next_action_note ?? undefined,
+  occurred_at: w.occurred_at,
+  created_at: w.created_at,
+});
+
+const wireToTask = (w: BootstrapPayload['tasks'][number]): FollowUpTask => ({
+  id: w.id,
+  lead_id: w.lead_id,
+  assigned_to: w.assigned_to,
+  task_type: w.task_type,
+  cadence_step: w.cadence_step ?? undefined,
+  due_at: w.due_at,
+  status: w.status as FollowUpTask['status'],
+  priority: (w.priority ?? 'medium') as TaskPriority,
+  completed_at: w.completed_at ?? undefined,
+  activity_id: w.activity_id ?? undefined,
+  title: w.title,
+  created_at: w.created_at,
+});
+
+const wireToVisit = (w: BootstrapPayload['visits'][number]): OfficeVisit => ({
+  id: w.id,
+  lead_id: w.lead_id,
+  counsellor_id: w.counsellor_id ?? '',
+  scheduled_at: w.scheduled_at,
+  duration_min: w.duration_min,
+  mode: w.mode as 'office' | 'video',
+  attendees: w.attendees ?? '',
+  status: w.status as VisitStatus,
+  confirmed_at: undefined,
+  reminder_sent_at: undefined,
+  google_event_id: undefined,
+  outcome_note: w.outcome_note ?? undefined,
+  created_at: w.created_at,
+});
+
+const wireToPayment = (w: BootstrapPayload['payments'][number]): Payment => ({
+  id: w.id,
+  lead_id: w.lead_id,
+  package: w.package as Payment['package'],
+  payment_type: w.payment_type as Payment['payment_type'],
+  amount: w.amount ?? 0,
+  currency: w.currency,
+  paid_at: w.paid_at,
+  method: w.method ?? '',
+  receipt_ref: w.receipt_ref ?? '',
+  recorded_by: w.recorded_by ?? '',
+  verified_by: w.verified_by ?? undefined,
+  verified_at: w.verified_at ?? undefined,
+});
+
+const wireToStageHistory = (w: BootstrapPayload['stageHistory'][number]): StageHistory => ({
+  id: w.id,
+  lead_id: w.lead_id,
+  from_stage: (w.from_stage as LeadStage | null) ?? null,
+  to_stage: w.to_stage as LeadStage,
+  changed_by: w.changed_by ?? '',
+  changed_at: w.changed_at,
+  note: w.note ?? undefined,
+});
+
+export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [currentEmployee, _setCurrentEmployee] = useState<Employee | null>(null);
+
+  // Stable placeholder Employee used only when bootstrap hasn't resolved yet.
+  // The public context type keeps `currentEmployee: Employee` (non-null) to
+  // avoid cascading null-checks across 19 consumer components, but we never
+  // mount those consumers while currentEmployee === null — the BootstrapGate
+  // is rendered instead (see the conditional return at the bottom of the
+  // function). The placeholder is therefore only ever observed by code
+  // inside the gate.
+  const placeholderEmployee: Employee = useMemo(
+    () => ({
+      id: '__loading__',
+      full_name: 'Loading…',
+      email: '',
+      phone_e164: '',
+      role: 'counsellor',
+      is_active: true,
+      accepts_new_leads: true,
+      last_assigned_at: null,
+      created_at: new Date(0).toISOString(),
+      title: '',
+    }),
+    []
+  );
+  const effectiveEmployee: Employee = currentEmployee ?? placeholderEmployee;
+  const [sources, setSources] = useState<LeadSource[]>([]);
+  const [lostReasons, setLostReasons] = useState<LostReason[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [activities, setActivities] = useState<LeadActivity[]>([]);
+  const [tasks, setTasks] = useState<FollowUpTask[]>([]);
+  const [visits, setVisits] = useState<OfficeVisit[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [stageHistory, setStageHistory] = useState<StageHistory[]>([]);
+  const [company] = useState<CompanyProfile>(DEFAULT_COMPANY);
+  const [companyPresets] = useState<CompanyProfile[]>(INITIAL_PRESETS);
+
+  // -----------------------------------------------------------------------
+  // Auth + bootstrap lifecycle
+  // -----------------------------------------------------------------------
+
+  const loadBootstrap = useCallback(async (userId: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.bootstrap();
+      setEmployees(data.employees.map(idToEmployee));
+      setSources(data.sources as LeadSource[]);
+      setLostReasons(data.lostReasons as LostReason[]);
+      const allLeads = data.leads.map(wireToLead);
+      // Recompute score_weight locally; the server returns it but a missing
+      // value (e.g. legacy rows) is filled in here.
+      setLeads(allLeads.map((l) => ({ ...l, score_weight: l.score_weight ?? calculateLeadScoreWeight(l, [], data.sources as LeadSource[]).weight })));
+      setActivities(data.activities.map(wireToActivity));
+      setTasks(data.tasks.map(wireToTask));
+      setVisits(data.visits.map(wireToVisit));
+      setPayments(data.payments.map(wireToPayment));
+      setStageHistory(data.stageHistory.map(wireToStageHistory));
+
+      // Resolve currentEmployee from the server-stated viewer identity.
+      // Counsellor-scoped employees rows omit user_id, so matching by session
+      // user id would fall through to employees[0] — the wrong person.
+      const viewerInfo = data.viewer;
+      const viewerEmp = viewerInfo ? data.employees.find((e) => e.id === viewerInfo.employeeId) : undefined;
+      const matched = viewerEmp ?? data.employees.find((e) => e.user_id === userId);
+      const first = data.employees[0];
+      _setCurrentEmployee(matched ? idToEmployee(matched) : first ? idToEmployee(first) : null);
+      setIsAuthenticated(true);
+    } catch (err) {
+      setError((err as Error).message);
+      setIsAuthenticated(false);
+    } finally {
+      setLoading(false);
     }
-    return INITIAL_COMPANY_PROFILES;
+  }, []);
+
+  // initial auth probe
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await api.me();
+        if (cancelled) return;
+        if (!me.orgId) {
+          setIsAuthenticated(true);
+          setLoading(false);
+          setError('Your account is not linked to a CRM workspace yet.');
+          return;
+        }
+        setSessionUserId(me.userId);
+        await loadBootstrap(me.userId);
+      } catch (err) {
+        if (cancelled) return;
+        const status = (err as Error).message;
+        if (status.startsWith('401')) {
+          setIsAuthenticated(false);
+          setLoading(false);
+        } else {
+          setError(status);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadBootstrap]);
+
+  // listen to better-auth client for sign-out events (sign-in is handled by
+  // BootstrapGate calling window.location.reload() to keep the gating simple
+  // and avoid bootstrap races with the provider's state).
+  useEffect(() => {
+    let mounted = true;
+    let unsubscribe: (() => void) | null = null;
+    // authClient exposes a nanostore under $store; subscribe to that so we
+    // can clear local state when the user signs out without reloading.
+    try {
+      const store = (authClient as unknown as { $store: { listen: (cb: (s: { user?: { id?: string } | null }) => void) => () => void } }).$store;
+      unsubscribe = store.listen((s) => {
+        if (!mounted) return;
+        if (!s?.user?.id && isAuthenticated) {
+          setIsAuthenticated(false);
+          setSessionUserId(null);
+          _setCurrentEmployee(null);
+        }
+      });
+    } catch {
+      // best-effort: if the SDK shape changes the sign-out handler simply
+      // doesn't fire, the next reload will reflect the new state anyway
+    }
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+  }, [isAuthenticated]);
+
+  // -----------------------------------------------------------------------
+  // Sync buffer (mutations are queued and flushed 1s after the last change)
+  // -----------------------------------------------------------------------
+
+  const buffer = useRef<SyncBuffer>(emptyBuffer());
+  // Side-channel: callers that must flush *now* (e.g. reassignLead) write the
+  // exact row to send here, then call flushSync. flushSync prefers these
+  // stamped rows over the React-state closure, so the network payload always
+  // reflects the user's intent — even when setLeads hasn't re-rendered yet.
+  type UpKeys = 'leads' | 'lead_activities' | 'follow_up_tasks' | 'office_visits' | 'payments' | 'employees';
+  const pendingUpserts = useRef<{ [K in UpKeys]: Map<string, any> }>({
+    leads: new Map(),
+    lead_activities: new Map(),
+    follow_up_tasks: new Map(),
+    office_visits: new Map(),
+    payments: new Map(),
+    employees: new Map(),
   });
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const lastSyncAt = useRef<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
-  // Save company to localStorage
+  const markDirty = useCallback(
+    (key: keyof SyncBuffer, id: string) => {
+      buffer.current[key].add(id);
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      flushTimer.current = setTimeout(() => {
+        void flushSync();
+      }, 800);
+    },
+    []
+  );
+
+  const flushSync = useCallback(async () => {
+    if (inFlight.current) {
+      // chain after in-flight
+      await inFlight.current;
+    }
+    const buf = buffer.current;
+    const leadsDirty = [...buf.leads];
+    const activitiesDirty = [...buf.lead_activities];
+    const tasksDirty = [...buf.follow_up_tasks];
+    const visitsDirty = [...buf.office_visits];
+    const paymentsDirty = [...buf.payments];
+    const employeesDirty = [...buf.employees];
+    if (
+      !leadsDirty.length && !activitiesDirty.length && !tasksDirty.length &&
+      !visitsDirty.length && !paymentsDirty.length && !employeesDirty.length
+    ) return;
+
+    // reset buffer before sending so new mutations during the sync land in a
+    // fresh buffer
+    buffer.current = emptyBuffer();
+
+    // Helper: pick the row to send. Prefer the side-channel stamped row
+    // (reassignLead writes here so the new owner_id is shipped even though
+    // setLeads hasn't committed yet). Fall back to the React-state closure.
+    const pick = <K extends UpKeys>(
+      key: K,
+      dirty: string[],
+      rows: Array<{ id: string } & any>
+    ): any[] | undefined => {
+      if (!dirty.length) return undefined;
+      const stamped = pendingUpserts.current[key];
+      // If every dirty id has a stamped row, use the side-channel alone
+      // (most accurate for the calling action). Otherwise merge: stamped
+      // first, then any closure rows not yet represented.
+      if (dirty.every((id) => stamped.has(id))) {
+        return dirty.map((id) => stamped.get(id));
+      }
+      const merged = new Map<string, any>();
+      for (const id of dirty) {
+        if (stamped.has(id)) merged.set(id, stamped.get(id));
+        else {
+          const r = rows.find((x) => x.id === id);
+          if (r) merged.set(id, r);
+        }
+      }
+      return [...merged.values()];
+    };
+    const leadsRows = pick('leads', leadsDirty, leads);
+    const actRows = pick('lead_activities', activitiesDirty, activities);
+    const taskRows = pick('follow_up_tasks', tasksDirty, tasks);
+    const visitRows = pick('office_visits', visitsDirty, visits);
+    const payRows = pick('payments', paymentsDirty, payments);
+    const empRows = pick('employees', employeesDirty, employees);
+    // Consume the stamped rows that are being sent (so they don't leak into
+    // the next flush of unrelated mutations).
+    (['leads','lead_activities','follow_up_tasks','office_visits','payments','employees'] as const).forEach((k) => {
+      const sent = (k === 'leads' ? leadsRows : k === 'lead_activities' ? actRows : k === 'follow_up_tasks' ? taskRows : k === 'office_visits' ? visitRows : k === 'payments' ? payRows : empRows) ?? [];
+      for (const r of sent) pendingUpserts.current[k].delete((r as { id: string }).id);
+    });
+
+    inFlight.current = (async () => {
+      try {
+        const payload = {
+          upserts: {
+            leads: leadsRows,
+            lead_activities: actRows,
+            follow_up_tasks: taskRows,
+            office_visits: visitRows,
+            payments: payRows,
+            employees: empRows,
+          },
+        };
+        const res: SyncResponse = await api.sync(payload);
+        lastSyncAt.current = res.serverTime;
+        // Merge authoritative refreshed rows back into local state
+        if (res.refreshedLeads?.length) {
+          setLeads((prev) => {
+            const map = new Map(prev.map((l) => [l.id, l]));
+            for (const w of res.refreshedLeads) map.set(w.id, wireToLead(w));
+            return [...map.values()];
+          });
+        }
+        if (res.refreshedStageHistory?.length) {
+          setStageHistory((prev) => {
+            const map = new Map(prev.map((h) => [h.id, h]));
+            for (const w of res.refreshedStageHistory) map.set(String(w.id), wireToStageHistory(w));
+            return [...map.values()];
+          });
+        }
+        setSyncError(null);
+      } catch (err) {
+        const msg = (err as Error).message ?? '';
+        setSyncError(msg);
+        // A 400 means the server permanently rejected these rows (validation
+        // or scope guard). Re-queueing them forever would poison every later
+        // sync, so drop the batch instead. Network/5xx errors stay retryable.
+        if (msg.startsWith('400')) {
+          console.warn('[sync] batch rejected by server, dropping:', msg);
+          return;
+        }
+        // re-queue so the next change retries
+        buffer.current = {
+          leads: new Set([...buffer.current.leads, ...leadsDirty]),
+          lead_activities: new Set([...buffer.current.lead_activities, ...activitiesDirty]),
+          follow_up_tasks: new Set([...buffer.current.follow_up_tasks, ...tasksDirty]),
+          office_visits: new Set([...buffer.current.office_visits, ...visitsDirty]),
+          payments: new Set([...buffer.current.payments, ...paymentsDirty]),
+          employees: new Set([...buffer.current.employees, ...employeesDirty]),
+        };
+      } finally {
+        inFlight.current = null;
+      }
+    })();
+    await inFlight.current;
+  }, [leads, activities, tasks, visits, payments, employees]);
+
+  // flush on tab close so we don't drop the last write
   useEffect(() => {
-    localStorage.setItem('crm_saas_company', JSON.stringify(company));
-  }, [company]);
+    const handler = () => {
+      if (buffer.current.leads.size || buffer.current.lead_activities.size || buffer.current.follow_up_tasks.size || buffer.current.office_visits.size || buffer.current.payments.size || buffer.current.employees.size) {
+        // best-effort; the network call may not finish
+        void flushSync();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [flushSync]);
 
-  useEffect(() => {
-    localStorage.setItem('crm_saas_company_presets', JSON.stringify(companyPresets));
-  }, [companyPresets]);
+  // -----------------------------------------------------------------------
+  // currentEmployee (defensive fallback before bootstrap completes)
+  // -----------------------------------------------------------------------
 
-  // Save to localStorage
-  useEffect(() => {
-    localStorage.setItem('saas_crm_leads', JSON.stringify(leads));
-  }, [leads]);
+  const setCurrentEmployee = useCallback((emp: Employee) => _setCurrentEmployee(emp), []);
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_activities', JSON.stringify(activities));
-  }, [activities]);
+  const signOut = useCallback(async () => {
+    await authClient.signOut();
+    setIsAuthenticated(false);
+    setSessionUserId(null);
+    _setCurrentEmployee(null);
+  }, []);
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_tasks', JSON.stringify(tasks));
-  }, [tasks]);
+  // surface the sync error as a separate field
+  const displayError = error || syncError;
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_visits', JSON.stringify(visits));
-  }, [visits]);
+  // -----------------------------------------------------------------------
+  // Company profile (in-memory only)
+  // -----------------------------------------------------------------------
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_payments', JSON.stringify(payments));
-  }, [payments]);
+  const updateCompany = useCallback(() => {
+    // local-only company settings; no-op for the DB-backed build
+  }, []);
+  const switchCompanyPreset = useCallback(() => {}, []);
+  const createCompanyProfile = useCallback(() => {}, []);
+  const formatCurrency = useCallback((amount: number) => `${amount.toLocaleString()} ${company.currency_code}`, [company]);
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_stage_history', JSON.stringify(stageHistory));
-  }, [stageHistory]);
+  // -----------------------------------------------------------------------
+  // Action methods
+  // -----------------------------------------------------------------------
 
-  useEffect(() => {
-    localStorage.setItem('saas_crm_employees', JSON.stringify(employees));
-  }, [employees]);
-
-  // Round-robin assignment helper
-  const getNextCounsellorId = (): string => {
+  const getNextCounsellorId = useCallback((): string => {
     const eligible = employees.filter((e) => e.is_active && e.accepts_new_leads && e.role === 'counsellor');
-    if (eligible.length === 0) {
-      // Fallback to manager or first employee
-      return employees[0].id;
+    if (!eligible.length) {
+      return employees[0]?.id ?? '';
     }
-    // Sort by oldest last_assigned_at (nulls first)
     eligible.sort((a, b) => {
       if (!a.last_assigned_at) return -1;
       if (!b.last_assigned_at) return 1;
       return new Date(a.last_assigned_at).getTime() - new Date(b.last_assigned_at).getTime();
     });
-
     const selected = eligible[0];
     const nowIso = new Date().toISOString();
     setEmployees((prev) =>
       prev.map((emp) => (emp.id === selected.id ? { ...emp, last_assigned_at: nowIso } : emp))
     );
+    markDirty('employees', selected.id);
     return selected.id;
-  };
+  }, [employees, markDirty]);
 
-  // Create lead with phone normalisation, duplicate check & round-robin
-  const createLead = (leadData: Partial<Lead>): { success: boolean; leadId?: string; isDuplicate?: boolean; message?: string; matchedLead?: Lead } => {
-    const rawPhone = leadData.phone_raw || '';
-    const norm = normalizeBdPhone(rawPhone);
-    const phoneE164 = norm.e164 || (rawPhone.startsWith('+') ? rawPhone : null);
-    const whatsappE164 = leadData.whatsapp_e164
-      ? normalizeBdPhone(leadData.whatsapp_e164).e164 || leadData.whatsapp_e164
-      : phoneE164;
+  const createLead = useCallback(
+    (leadData: Partial<Lead>) => {
+      const rawPhone = leadData.phone_raw || '';
+      const norm = normalizeBdPhone(rawPhone);
+      const phoneE164 = norm.e164 || (rawPhone.startsWith('+') ? rawPhone : null);
+      const whatsappE164 = leadData.whatsapp_e164
+        ? normalizeBdPhone(leadData.whatsapp_e164).e164 || leadData.whatsapp_e164
+        : phoneE164;
 
-    // Check duplicate
-    const dupCheck = checkDuplicateLead(
-      { phone: phoneE164 || undefined, whatsapp: whatsappE164 || undefined, email: leadData.email },
-      leads
-    );
+      const dupCheck = checkDuplicateLead(
+        { phone: phoneE164 || undefined, whatsapp: whatsappE164 || undefined, email: leadData.email },
+        leads
+      );
+      const now = new Date();
+      const nowIso = now.toISOString();
 
-    const now = new Date();
-    const nowIso = now.toISOString();
-
-    if (dupCheck.isDuplicate && dupCheck.matchedLead) {
-      const existing = dupCheck.matchedLead;
-      // If matching open lead: do not create new. Add re-enquiry activity, elevate temp, keep owner
-      if (!['lost', 'nurture'].includes(existing.stage)) {
-        const reEnquiryActivity: LeadActivity = {
-          id: `act-${Date.now()}`,
-          lead_id: existing.id,
-          employee_id: currentEmployee.id,
-          activity_type: 'system',
-          outcome: 'replied',
-          summary: `Re-enquiry inbound from ${leadData.full_name || 'student'}. Source: ${leadData.source_id || 'Direct'}`,
-          occurred_at: nowIso,
-          created_at: nowIso,
-        };
-        setActivities((prev) => [reEnquiryActivity, ...prev]);
-
-        // Elevate temperature if cold
-        const newTemp: LeadTemperature = existing.temperature === 'cold' ? 'warm' : existing.temperature;
-        setLeads((prev) =>
-          prev.map((l) => (l.id === existing.id ? { ...l, temperature: newTemp, updated_at: nowIso } : l))
-        );
-
-        return {
-          success: true,
-          leadId: existing.id,
-          isDuplicate: true,
-          matchedLead: existing,
-          message: `Re-enquiry matched existing lead "${existing.full_name}". Timeline updated!`,
-        };
-      } else {
-        // Match on Lost or Nurture: reopen to contacted
-        const reopenActivity: LeadActivity = {
-          id: `act-${Date.now()}`,
-          lead_id: existing.id,
-          employee_id: currentEmployee.id,
-          activity_type: 'system',
-          outcome: 'replied',
-          summary: `Previously ${existing.stage.toUpperCase()} lead re-enquired! Reopened to Contacted stage.`,
-          occurred_at: nowIso,
-          created_at: nowIso,
-        };
-        setActivities((prev) => [reopenActivity, ...prev]);
-
+      if (dupCheck.isDuplicate && dupCheck.matchedLead) {
+        const existing = dupCheck.matchedLead;
+        if (!['lost', 'nurture'].includes(existing.stage)) {
+          const reEnqId = genId();
+          setActivities((prev) => [
+            {
+              id: reEnqId,
+              lead_id: existing.id,
+              employee_id: effectiveEmployee.id,
+              activity_type: 'system',
+              outcome: 'replied',
+              summary: `Re-enquiry inbound from ${leadData.full_name || 'student'}. Source: ${leadData.source_id || 'Direct'}`,
+              occurred_at: nowIso,
+              created_at: nowIso,
+            },
+            ...prev,
+          ]);
+          markDirty('lead_activities', reEnqId);
+          const newTemp: LeadTemperature = existing.temperature === 'cold' ? 'warm' : existing.temperature;
+          setLeads((prev) =>
+            prev.map((l) => (l.id === existing.id ? { ...l, temperature: newTemp, updated_at: nowIso } : l))
+          );
+          markDirty('leads', existing.id);
+          return {
+            success: true,
+            leadId: existing.id,
+            isDuplicate: true,
+            matchedLead: existing,
+            message: `Re-enquiry matched existing lead "${existing.full_name}". Timeline updated!`,
+          };
+        }
+        // reopen lost/nurture lead
+        const reopenId = genId();
+        setActivities((prev) => [
+          {
+            id: reopenId,
+            lead_id: existing.id,
+            employee_id: effectiveEmployee.id,
+            activity_type: 'system',
+            outcome: 'replied',
+            summary: `Previously ${existing.stage.toUpperCase()} lead re-enquired! Reopened to Contacted stage.`,
+            occurred_at: nowIso,
+            created_at: nowIso,
+          },
+          ...prev,
+        ]);
+        markDirty('lead_activities', reopenId);
         const nextActionIso = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
         setLeads((prev) =>
           prev.map((l) =>
             l.id === existing.id
               ? {
                   ...l,
-                  stage: 'contacted',
-                  temperature: 'hot',
+                  stage: 'contacted' as LeadStage,
+                  temperature: 'hot' as LeadTemperature,
                   next_action_at: nextActionIso,
                   next_action_note: 'Reopened lead: Urgent follow-up needed',
                   updated_at: nowIso,
@@ -334,20 +815,19 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               : l
           )
         );
-
+        markDirty('leads', existing.id);
         setStageHistory((prev) => [
           {
-            id: `hist-${Date.now()}`,
+            id: genId(),
             lead_id: existing.id,
             from_stage: existing.stage,
             to_stage: 'contacted',
-            changed_by: currentEmployee.id,
+            changed_by: effectiveEmployee.id,
             changed_at: nowIso,
             note: 'Reopened due to re-enquiry',
           },
           ...prev,
         ]);
-
         return {
           success: true,
           leadId: existing.id,
@@ -356,200 +836,184 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           message: `Reopened previous ${existing.stage} lead "${existing.full_name}" to Contacted.`,
         };
       }
-    }
 
-    // New lead creation
-    const ownerId = leadData.owner_id || getNextCounsellorId();
-    const scoreResult = calculateLeadScore(leadData);
-    const newId = `lead-${Date.now()}`;
+      // Counsellors always own the leads they capture (data isolation means
+      // a round-robin-assigned lead would immediately vanish from their
+      // view). Managers/admins keep round-robin / explicit assignment.
+      const ownerId = effectiveEmployee.role === 'counsellor'
+        ? effectiveEmployee.id
+        : leadData.owner_id || getNextCounsellorId();
+      const newId = genId();
+      const defaultSlaNextAction = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
-    // SLA clock starts: next_action_at = now + 2 working hours
-    const defaultSlaNextAction = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-
-    const newLead: Lead = {
-      id: newId,
-      full_name: leadData.full_name || 'Anonymous Student',
-      phone_raw: rawPhone,
-      phone_e164: phoneE164 || '',
-      whatsapp_e164: whatsappE164 || phoneE164 || '',
-      email: leadData.email ? leadData.email.trim().toLowerCase() : '',
-      city: leadData.city || 'Dhaka',
-      country: leadData.country || 'BD',
-      source_id: leadData.source_id || 'src-assessment',
-      source_ref: leadData.source_ref || `manual_entry_${Date.now()}`,
-      owner_id: ownerId,
-      stage: 'new',
-      temperature: scoreResult.temperature,
-      score: scoreResult.score,
-      education_level: leadData.education_level || 'HSC',
-      last_result: leadData.last_result || 'GPA 4.50',
-      target_degree: leadData.target_degree || 'Bachelor',
-      target_programme: leadData.target_programme || 'Computer Science / Engineering',
-      target_intake: leadData.target_intake || 'March 2027',
-      english_level: leadData.english_level || 'Medium of Instruction',
-      funding_confirmed: leadData.funding_confirmed ?? false,
-      parent_involved: leadData.parent_involved ?? false,
-      has_passport: leadData.has_passport ?? false,
-      tags: Array.isArray(leadData.tags) ? leadData.tags : [],
-      first_contact_at: null,
-      next_action_at: leadData.next_action_at || defaultSlaNextAction,
-      next_action_note: leadData.next_action_note || 'Initial call & WhatsApp (2h SLA)',
-      created_at: nowIso,
-      updated_at: nowIso,
-    };
-
-    const initialWeightResult = calculateLeadScoreWeight(newLead, [], sources);
-    newLead.score_weight = initialWeightResult.weight;
-
-    setLeads((prev) => [newLead, ...prev]);
-
-    // Cadence Tasks Generation (Day 0, Day 1, Day 3)
-    const cadenceTasks: FollowUpTask[] = [
-      {
-        id: `task-${Date.now()}-0`,
-        lead_id: newId,
-        assigned_to: ownerId,
-        task_type: 'call',
-        cadence_step: 0,
-        due_at: defaultSlaNextAction,
-        status: 'open',
-        priority: 'high',
-        title: 'Day 0: First call & WhatsApp attempt (SLA: 2 hours)',
+      const newLead: Lead = {
+        id: newId,
+        full_name: leadData.full_name || 'Anonymous Student',
+        phone_raw: rawPhone,
+        phone_e164: phoneE164 || '',
+        whatsapp_e164: whatsappE164 || phoneE164 || '',
+        email: leadData.email ? leadData.email.trim().toLowerCase() : '',
+        city: leadData.city || 'Dhaka',
+        country: leadData.country || 'BD',
+        source_id: leadData.source_id || sources[0]?.id || '',
+        source_ref: leadData.source_ref || `manual_entry_${genId()}`,
+        owner_id: ownerId,
+        stage: 'new' as LeadStage,
+        temperature: 'warm' as LeadTemperature,
+        score: 0,
+        education_level: leadData.education_level || 'HSC',
+        last_result: leadData.last_result || 'GPA 4.50',
+        target_degree: leadData.target_degree || 'Bachelor',
+        target_programme: leadData.target_programme || 'Computer Science / Engineering',
+        target_intake: leadData.target_intake || 'March 2027',
+        english_level: leadData.english_level || 'Medium of Instruction',
+        funding_confirmed: leadData.funding_confirmed ?? false,
+        parent_involved: leadData.parent_involved ?? false,
+        has_passport: leadData.has_passport ?? false,
+        tags: Array.isArray(leadData.tags) ? leadData.tags : [],
+        first_contact_at: null,
+        next_action_at: leadData.next_action_at || defaultSlaNextAction,
+        next_action_note: leadData.next_action_note || 'Initial call & WhatsApp (2h SLA)',
         created_at: nowIso,
-      },
-      {
-        id: `task-${Date.now()}-1`,
-        lead_id: newId,
-        assigned_to: ownerId,
-        task_type: 'whatsapp',
-        cadence_step: 1,
-        due_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        status: 'open',
-        priority: 'medium',
-        title: 'Day 1: Free Consultation & Webinar invitation',
-        created_at: nowIso,
-      },
-      {
-        id: `task-${Date.now()}-3`,
-        lead_id: newId,
-        assigned_to: ownerId,
-        task_type: 'call',
-        cadence_step: 3,
-        due_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
-        status: 'open',
-        priority: 'medium',
-        title: 'Day 3: University matching & Scholarship deadlines check',
-        created_at: nowIso,
-      },
-    ];
-    setTasks((prev) => [...cadenceTasks, ...prev]);
+        updated_at: nowIso,
+      };
+      const weight = calculateLeadScoreWeight(newLead, [], sources).weight;
+      newLead.score_weight = weight;
+      setLeads((prev) => [newLead, ...prev]);
+      markDirty('leads', newId);
 
-    // Record stage history
-    setStageHistory((prev) => [
-      {
-        id: `hist-${Date.now()}`,
-        lead_id: newId,
-        from_stage: null,
-        to_stage: 'new',
-        changed_by: currentEmployee.id,
-        changed_at: nowIso,
-        note: 'Lead captured & assigned via round-robin',
-      },
-      ...prev,
-    ]);
+      // initial cadence tasks
+      const cadence: FollowUpTask[] = [
+        {
+          id: genId(),
+          lead_id: newId,
+          assigned_to: ownerId,
+          task_type: 'call',
+          cadence_step: 0,
+          due_at: defaultSlaNextAction,
+          status: 'open',
+          priority: 'high',
+          title: 'Day 0: First call & WhatsApp attempt (SLA: 2 hours)',
+          created_at: nowIso,
+        },
+        {
+          id: genId(),
+          lead_id: newId,
+          assigned_to: ownerId,
+          task_type: 'whatsapp',
+          cadence_step: 1,
+          due_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          status: 'open',
+          priority: 'medium',
+          title: 'Day 1: Free Consultation & Webinar invitation',
+          created_at: nowIso,
+        },
+        {
+          id: genId(),
+          lead_id: newId,
+          assigned_to: ownerId,
+          task_type: 'call',
+          cadence_step: 3,
+          due_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+          status: 'open',
+          priority: 'medium',
+          title: 'Day 3: University matching & Scholarship deadlines check',
+          created_at: nowIso,
+        },
+      ];
+      setTasks((prev) => [...cadence, ...prev]);
+      cadence.forEach((t) => markDirty('follow_up_tasks', t.id));
 
-    return { success: true, leadId: newId, isDuplicate: false };
-  };
-
-  // Update lead
-  const updateLead = (id: string, updates: Partial<Lead>, stageChangeNote?: string): boolean => {
-    const existing = leads.find((l) => l.id === id);
-    if (!existing) return false;
-
-    const merged = { ...existing, ...updates };
-    const scoreResult = calculateLeadScore(merged);
-    const nowIso = new Date().toISOString();
-
-    const stageChanged = updates.stage && updates.stage !== existing.stage;
-    const newStage = updates.stage || existing.stage;
-
-    // Record stage history if changed
-    if (stageChanged && updates.stage) {
       setStageHistory((prev) => [
         {
-          id: `hist-${Date.now()}`,
-          lead_id: id,
-          from_stage: existing.stage,
-          to_stage: updates.stage as LeadStage,
-          changed_by: currentEmployee.id,
+          id: genId(),
+          lead_id: newId,
+          from_stage: null,
+          to_stage: 'new',
+          changed_by: effectiveEmployee.id,
           changed_at: nowIso,
-          note: stageChangeNote || `Stage moved to ${updates.stage}`,
+          note: 'Lead captured & assigned via round-robin',
         },
         ...prev,
       ]);
-    }
 
-    setLeads((prev) =>
-      prev.map((l) => {
-        if (l.id === id) {
-          const updatedCandidate: Lead = {
-            ...merged,
-            score: scoreResult.score,
-            temperature: updates.temperature || scoreResult.temperature,
-            stage: newStage,
-            updated_at: nowIso,
-          };
-          const dynamicWeight = calculateLeadScoreWeight(updatedCandidate, activities, sources).weight;
-          return {
-            ...updatedCandidate,
-            score_weight: dynamicWeight,
-          };
-        }
-        return l;
-      })
-    );
+      return { success: true, leadId: newId, isDuplicate: false };
+    },
+    [leads, currentEmployee, sources, getNextCounsellorId, markDirty]
+  );
 
-    return true;
-  };
-
-  // Log interaction (Outcome & Next Action are required by system rules)
-  const logInteraction = (data: {
-    leadId: string;
-    activityType: ActivityType;
-    direction: 'outbound' | 'inbound';
-    outcome: ActivityOutcome;
-    summary: string;
-    nextActionAt: string;
-    nextActionNote?: string;
-    taskIdToComplete?: string;
-  }) => {
-    const nowIso = new Date().toISOString();
-    const newActivity: LeadActivity = {
-      id: `act-${Date.now()}`,
-      lead_id: data.leadId,
-      employee_id: currentEmployee.id,
-      activity_type: data.activityType,
-      direction: data.direction,
-      outcome: data.outcome,
-      summary: data.summary,
-      next_action_at: data.nextActionAt,
-      next_action_note: data.nextActionNote,
-      occurred_at: nowIso,
-      created_at: nowIso,
-    };
-
-    setActivities((prev) => [newActivity, ...prev]);
-
-    // Update lead's next action & first contact timestamp if in 'new'
-    const lead = leads.find((l) => l.id === data.leadId);
-    if (lead) {
-      const isFirstContact = !lead.first_contact_at && data.direction === 'outbound';
-      const newStage = lead.stage === 'new' && isFirstContact ? 'contacted' : lead.stage;
-
+  const updateLead = useCallback(
+    (id: string, updates: Partial<Lead>, stageChangeNote?: string): boolean => {
+      const existing = leads.find((l) => l.id === id);
+      if (!existing) return false;
+      const nowIso = new Date().toISOString();
+      const newStage = updates.stage || existing.stage;
+      const stageChanged = updates.stage && updates.stage !== existing.stage;
+      if (stageChanged) {
+        setStageHistory((prev) => [
+          {
+            id: genId(),
+            lead_id: id,
+            from_stage: existing.stage,
+            to_stage: newStage,
+            changed_by: effectiveEmployee.id,
+            changed_at: nowIso,
+            note: stageChangeNote || `Stage moved to ${newStage}`,
+          },
+          ...prev,
+        ]);
+      }
       setLeads((prev) =>
         prev.map((l) => {
-          if (l.id === data.leadId) {
-            const nextCandidate: Lead = {
+          if (l.id !== id) return l;
+          const merged = { ...l, ...updates, stage: newStage, updated_at: nowIso };
+          const dynamicWeight = calculateLeadScoreWeight(merged, activities, sources).weight;
+          return { ...merged, score_weight: dynamicWeight };
+        })
+      );
+      markDirty('leads', id);
+      return true;
+    },
+    [leads, activities, sources, currentEmployee, markDirty]
+  );
+
+  const logInteraction = useCallback(
+    (data: {
+      leadId: string;
+      activityType: ActivityType;
+      direction: 'outbound' | 'inbound';
+      outcome: ActivityOutcome;
+      summary: string;
+      nextActionAt: string;
+      nextActionNote?: string;
+      taskIdToComplete?: string;
+    }) => {
+      const nowIso = new Date().toISOString();
+      const actId = genId();
+      const newActivity: LeadActivity = {
+        id: actId,
+        lead_id: data.leadId,
+        employee_id: effectiveEmployee.id,
+        activity_type: data.activityType,
+        direction: data.direction,
+        outcome: data.outcome,
+        summary: data.summary,
+        next_action_at: data.nextActionAt,
+        next_action_note: data.nextActionNote,
+        occurred_at: nowIso,
+        created_at: nowIso,
+      };
+      setActivities((prev) => [newActivity, ...prev]);
+      markDirty('lead_activities', actId);
+
+      const lead = leads.find((l) => l.id === data.leadId);
+      if (lead) {
+        const isFirstContact = !lead.first_contact_at && data.direction === 'outbound';
+        const newStage = lead.stage === 'new' && isFirstContact ? ('contacted' as LeadStage) : lead.stage;
+        setLeads((prev) =>
+          prev.map((l) => {
+            if (l.id !== data.leadId) return l;
+            const merged = {
               ...l,
               stage: newStage,
               first_contact_at: isFirstContact ? nowIso : l.first_contact_at,
@@ -557,700 +1021,655 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               next_action_note: data.nextActionNote || l.next_action_note,
               updated_at: nowIso,
             };
-            const dynamicWeight = calculateLeadScoreWeight(
-              nextCandidate,
-              [newActivity, ...activities],
-              sources
-            ).weight;
-            return {
-              ...nextCandidate,
-              score_weight: dynamicWeight,
-            };
+            const dynamicWeight = calculateLeadScoreWeight(merged, [newActivity, ...activities], sources).weight;
+            return { ...merged, score_weight: dynamicWeight };
+          })
+        );
+        markDirty('leads', data.leadId);
+        if (newStage !== lead.stage) {
+          setStageHistory((prev) => [
+            {
+              id: genId(),
+              lead_id: data.leadId,
+              from_stage: lead.stage,
+              to_stage: newStage,
+              changed_by: effectiveEmployee.id,
+              changed_at: nowIso,
+              note: 'First contact attempt logged',
+            },
+            ...prev,
+          ]);
+        }
+      }
+      if (data.taskIdToComplete) {
+        setTasks((prev) => prev.map((t) => (t.id === data.taskIdToComplete ? { ...t, status: 'done', completed_at: nowIso, activity_id: actId } : t)));
+        markDirty('follow_up_tasks', data.taskIdToComplete);
+      }
+    },
+    [leads, activities, sources, currentEmployee, markDirty]
+  );
+
+  const completeTask = useCallback(
+    (taskId: string, outcomeNote?: string) => {
+      const target = tasks.find((t) => t.id === taskId);
+      if (!target) return;
+      const nowIso = new Date().toISOString();
+      const actId = genId();
+      setActivities((prev) => [
+        {
+          id: actId,
+          lead_id: target.lead_id,
+          employee_id: effectiveEmployee.id,
+          activity_type: (target.task_type as ActivityType) || 'call',
+          direction: 'outbound',
+          outcome: 'connected',
+          summary: outcomeNote ? `Completed follow-up task "${target.title}": ${outcomeNote}` : `Completed follow-up task: "${target.title}"`,
+          next_action_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+          next_action_note: 'Routine cadence follow-up',
+          occurred_at: nowIso,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('lead_activities', actId);
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: 'done', completed_at: nowIso, activity_id: actId } : t)));
+      markDirty('follow_up_tasks', taskId);
+      const nextIso = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+      setLeads((prev) => prev.map((l) => (l.id === target.lead_id ? { ...l, next_action_at: nextIso, next_action_note: 'Routine cadence follow-up', updated_at: nowIso } : l)));
+      markDirty('leads', target.lead_id);
+    },
+    [tasks, currentEmployee, markDirty]
+  );
+
+  const reopenTask = useCallback(
+    (taskId: string) => {
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: 'open', completed_at: undefined } : t)));
+      markDirty('follow_up_tasks', taskId);
+    },
+    [markDirty]
+  );
+
+  const updateTaskPriority = useCallback(
+    (taskId: string, priority: TaskPriority) => {
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, priority } : t)));
+      markDirty('follow_up_tasks', taskId);
+    },
+    [markDirty]
+  );
+
+  const addQuickNote = useCallback(
+    (leadId: string, noteText: string) => {
+      if (!noteText.trim()) return;
+      const nowIso = new Date().toISOString();
+      const actId = genId();
+      setActivities((prev) => [
+        {
+          id: actId,
+          lead_id: leadId,
+          employee_id: effectiveEmployee.id,
+          activity_type: 'note',
+          direction: undefined,
+          outcome: undefined,
+          summary: noteText.trim(),
+          occurred_at: nowIso,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('lead_activities', actId);
+      setLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, updated_at: nowIso } : l)));
+      markDirty('leads', leadId);
+    },
+    [currentEmployee, markDirty]
+  );
+
+  const scheduleFollowUpTask = useCallback(
+    (data: { leadId: string; assignedTo?: string; taskType: string; title: string; dueAt: string; priority?: TaskPriority; cadenceStep?: number }): FollowUpTask => {
+      const targetLead = leads.find((l) => l.id === data.leadId);
+      const assignedTo = data.assignedTo || targetLead?.owner_id || effectiveEmployee.id;
+      const nowIso = new Date().toISOString();
+      const taskId = genId();
+      const newTask: FollowUpTask = {
+        id: taskId,
+        lead_id: data.leadId,
+        assigned_to: assignedTo,
+        task_type: data.taskType,
+        title: data.title,
+        due_at: data.dueAt,
+        status: 'open',
+        priority: data.priority || 'medium',
+        cadence_step: data.cadenceStep ?? 3,
+        created_at: nowIso,
+      };
+      setTasks((prev) => [newTask, ...prev]);
+      markDirty('follow_up_tasks', taskId);
+      setLeads((prev) => prev.map((l) => (l.id === data.leadId ? { ...l, next_action_at: data.dueAt, next_action_note: data.title, updated_at: nowIso } : l)));
+      markDirty('leads', data.leadId);
+      const actId = genId();
+      setActivities((prev) => [
+        {
+          id: actId,
+          lead_id: data.leadId,
+          employee_id: effectiveEmployee.id,
+          activity_type: 'system',
+          summary: `Automated Cadence: Scheduled follow-up "${data.title}" due ${new Date(data.dueAt).toLocaleString()}`,
+          next_action_at: data.dueAt,
+          next_action_note: data.title,
+          occurred_at: nowIso,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('lead_activities', actId);
+      return newTask;
+    },
+    [leads, currentEmployee, markDirty]
+  );
+
+  const batchScheduleFollowUpTasks = useCallback(
+    (tasksToCreate: Array<{ leadId: string; assignedTo?: string; taskType: string; title: string; dueAt: string; priority?: TaskPriority; cadenceStep?: number }>): number => {
+      if (!tasksToCreate.length) return 0;
+      const nowIso = new Date().toISOString();
+      const createdTasks: FollowUpTask[] = [];
+      const createdActivities: LeadActivity[] = [];
+      const leadUpdatesMap = new Map<string, { dueAt: string; note: string }>();
+      tasksToCreate.forEach((t, idx) => {
+        const targetLead = leads.find((l) => l.id === t.leadId);
+        const assignedTo = t.assignedTo || targetLead?.owner_id || effectiveEmployee.id;
+        const taskId = genId();
+        createdTasks.push({
+          id: taskId,
+          lead_id: t.leadId,
+          assigned_to: assignedTo,
+          task_type: t.taskType,
+          title: t.title,
+          due_at: t.dueAt,
+          status: 'open',
+          priority: t.priority || 'medium',
+          cadence_step: t.cadenceStep ?? 3,
+          created_at: nowIso,
+        });
+        createdActivities.push({
+          id: genId(),
+          lead_id: t.leadId,
+          employee_id: effectiveEmployee.id,
+          activity_type: 'system',
+          summary: `Automated Cadence: Auto-scheduled follow-up "${t.title}" due ${new Date(t.dueAt).toLocaleString()}`,
+          next_action_at: t.dueAt,
+          next_action_note: t.title,
+          occurred_at: nowIso,
+          created_at: nowIso,
+        });
+        leadUpdatesMap.set(t.leadId, { dueAt: t.dueAt, note: t.title });
+      });
+      setTasks((prev) => [...createdTasks, ...prev]);
+      createdTasks.forEach((t) => markDirty('follow_up_tasks', t.id));
+      setActivities((prev) => [...createdActivities, ...prev]);
+      createdActivities.forEach((a) => markDirty('lead_activities', a.id));
+      setLeads((prev) =>
+        prev.map((l) => {
+          const update = leadUpdatesMap.get(l.id);
+          if (update) {
+            return { ...l, next_action_at: update.dueAt, next_action_note: update.note, updated_at: nowIso };
           }
           return l;
         })
       );
+      [...leadUpdatesMap.keys()].forEach((id) => markDirty('leads', id));
+      return createdTasks.length;
+    },
+    [leads, currentEmployee, markDirty]
+  );
 
-      if (newStage !== lead.stage) {
-        setStageHistory((prev) => [
+  const bookOfficeVisit = useCallback(
+    (data: { leadId: string; scheduledAt: string; durationMin?: number; mode: 'office' | 'video'; attendees: string; counsellorId: string; notes?: string }) => {
+      const nowIso = new Date().toISOString();
+      const visitId = genId();
+      setVisits((prev) => [
+        {
+          id: visitId,
+          lead_id: data.leadId,
+          counsellor_id: data.counsellorId,
+          scheduled_at: data.scheduledAt,
+          duration_min: data.durationMin || 45,
+          mode: data.mode,
+          attendees: data.attendees,
+          status: 'booked',
+          outcome_note: data.notes,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('office_visits', visitId);
+      updateLead(
+        data.leadId,
+        {
+          stage: 'office_visit_booked',
+          temperature: 'hot',
+          next_action_at: data.scheduledAt,
+          next_action_note: `Office visit with ${data.attendees}`,
+        },
+        `Office visit scheduled for ${new Date(data.scheduledAt).toLocaleString()}`
+      );
+      const taskId = genId();
+      setTasks((prev) => [
+        {
+          id: taskId,
+          lead_id: data.leadId,
+          assigned_to: data.counsellorId,
+          task_type: 'office_visit',
+          due_at: data.scheduledAt,
+          status: 'open',
+          priority: 'high',
+          title: `Conduct ${data.mode} visit with ${data.attendees}`,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('follow_up_tasks', taskId);
+      const actId = genId();
+      setActivities((prev) => [
+        {
+          id: actId,
+          lead_id: data.leadId,
+          employee_id: effectiveEmployee.id,
+          activity_type: 'office_visit',
+          direction: 'inbound',
+          outcome: 'booked',
+          summary: `Booked office visit for ${new Date(data.scheduledAt).toLocaleDateString('en-GB')}. Attendees: ${data.attendees}`,
+          next_action_at: data.scheduledAt,
+          next_action_note: 'Prepare university list for meeting',
+          occurred_at: nowIso,
+          created_at: nowIso,
+        },
+        ...prev,
+      ]);
+      markDirty('lead_activities', actId);
+    },
+    [currentEmployee, markDirty, updateLead]
+  );
+
+  const updateVisitStatus = useCallback(
+    (visitId: string, status: VisitStatus, outcomeNote?: string) => {
+      const nowIso = new Date().toISOString();
+      const target = visits.find((v) => v.id === visitId);
+      if (!target) return;
+      setVisits((prev) => prev.map((v) => (v.id === visitId ? { ...v, status, outcome_note: outcomeNote || v.outcome_note } : v)));
+      markDirty('office_visits', visitId);
+      if (status === 'attended') {
+        const decisionDueIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        updateLead(
+          target.lead_id,
+          { stage: 'office_visit_done', temperature: 'hot', next_action_at: decisionDueIso, next_action_note: '24-hour post-visit decision follow-up' },
+          'Office visit attended successfully'
+        );
+        const taskId = genId();
+        setTasks((prev) => [
           {
-            id: `hist-${Date.now()}`,
-            lead_id: data.leadId,
-            from_stage: lead.stage,
-            to_stage: newStage,
-            changed_by: currentEmployee.id,
-            changed_at: nowIso,
-            note: 'First contact attempt logged',
+            id: taskId,
+            lead_id: target.lead_id,
+            assigned_to: target.counsellor_id,
+            task_type: 'call',
+            due_at: decisionDueIso,
+            status: 'open',
+            priority: 'high',
+            title: '24-hour decision follow-up with student/parent',
+            created_at: nowIso,
           },
           ...prev,
         ]);
+        markDirty('follow_up_tasks', taskId);
+      } else if (status === 'no_show') {
+        const recoveryIso = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+        const taskId = genId();
+        setTasks((prev) => [
+          {
+            id: taskId,
+            lead_id: target.lead_id,
+            assigned_to: target.counsellor_id,
+            task_type: 'whatsapp',
+            due_at: recoveryIso,
+            status: 'open',
+            priority: 'high',
+            title: 'No-show recovery: Send missed visit message on WhatsApp',
+            created_at: nowIso,
+          },
+          ...prev,
+        ]);
+        markDirty('follow_up_tasks', taskId);
       }
-    }
+    },
+    [visits, markDirty, updateLead]
+  );
 
-    // Complete task if specified
-    if (data.taskIdToComplete) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === data.taskIdToComplete ? { ...t, status: 'done', completed_at: nowIso, activity_id: newActivity.id } : t
+  const recordPayment = useCallback(
+    (data: { leadId: string; package: 'guidance' | 'complete_admission'; paymentType: 'package_fee' | 'deposit' | 'instalment'; amount: number; currency?: string; method: string; receiptRef: string }) => {
+      const nowIso = new Date().toISOString();
+      const paymentId = genId();
+      setPayments((prev) => [
+        {
+          id: paymentId,
+          lead_id: data.leadId,
+          package: data.package,
+          payment_type: data.paymentType,
+          amount: data.amount,
+          currency: data.currency || 'BDT',
+          paid_at: nowIso,
+          method: data.method,
+          receipt_ref: data.receiptRef,
+          recorded_by: effectiveEmployee.id,
+          verified_by: effectiveEmployee.role === 'admin' || effectiveEmployee.role === 'manager' ? effectiveEmployee.id : undefined,
+          verified_at: effectiveEmployee.role === 'admin' || effectiveEmployee.role === 'manager' ? nowIso : undefined,
+        },
+        ...prev,
+      ]);
+      markDirty('payments', paymentId);
+      updateLead(
+        data.leadId,
+        { stage: 'paid', temperature: 'hot', next_action_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), next_action_note: 'Submit application dossier to university portal' },
+        `Payment received: ${data.amount} BDT for ${data.package} package (${data.receiptRef})`
+      );
+    },
+    [currentEmployee, markDirty, updateLead]
+  );
+
+  const verifyPayment = useCallback(
+    (paymentId: string): boolean => {
+      if (effectiveEmployee.role !== 'admin' && effectiveEmployee.role !== 'manager') return false;
+      const nowIso = new Date().toISOString();
+      setPayments((prev) => prev.map((p) => (p.id === paymentId ? { ...p, verified_by: effectiveEmployee.id, verified_at: nowIso } : p)));
+      markDirty('payments', paymentId);
+      return true;
+    },
+    [currentEmployee, markDirty]
+  );
+
+  const reassignLead = useCallback(
+    (leadId: string, newOwnerId: string) => {
+      const nowIso = new Date().toISOString();
+      // Build the upsert row up-front from the current closure value, then
+      // push the *stamped* row into a side channel that flushSync consumes.
+      // This sidesteps the classic stale-closure problem: setLeads is queued
+      // and flushSync fired immediately would otherwise read pre-commit state
+      // and ship the OLD owner_id to the server.
+      const liveLead = leads.find((l) => l.id === leadId);
+      if (!liveLead) return;
+      const updatedLead: Lead = { ...liveLead, owner_id: newOwnerId, updated_at: nowIso };
+      pendingUpserts.current.leads.set(leadId, updatedLead);
+      setLeads((prev) => prev.map((l) => (l.id === leadId ? updatedLead : l)));
+      markDirty('leads', leadId);
+
+      // Re-queue all open tasks of this lead (assign_to should follow owner)
+      const openTaskIds = tasks.filter((t) => t.lead_id === leadId && t.status === 'open').map((t) => t.id);
+      setTasks((prev) => prev.map((t) => (t.lead_id === leadId && t.status === 'open' ? { ...t, assigned_to: newOwnerId } : t)));
+      openTaskIds.forEach((t) => markDirty('follow_up_tasks', t));
+
+      const newOwner = employees.find((e) => e.id === newOwnerId);
+      const actId = genId();
+      const actRow: LeadActivity = {
+        id: actId,
+        lead_id: leadId,
+        employee_id: effectiveEmployee.id,
+        activity_type: 'system',
+        summary: `Lead reassigned to ${newOwner?.full_name || 'new counsellor'} by ${effectiveEmployee.full_name}`,
+        occurred_at: nowIso,
+        created_at: nowIso,
+      };
+      pendingUpserts.current.lead_activities.set(actId, actRow);
+      setActivities((prev) => [actRow, ...prev]);
+      markDirty('lead_activities', actId);
+
+      // Flush immediately — closing the modal cancels the 800ms debounce and
+      // the reassignment is too important to sit in the buffer.
+      void flushSync();
+    },
+    [leads, tasks, employees, currentEmployee, markDirty, flushSync]
+  );
+
+  const toggleCounsellorAcceptingLeads = useCallback(
+    (employeeId: string) => {
+      setEmployees((prev) => prev.map((e) => (e.id === employeeId ? { ...e, accepts_new_leads: !e.accepts_new_leads } : e)));
+      markDirty('employees', employeeId);
+    },
+    [markDirty]
+  );
+
+  const mergeLeads = useCallback(
+    (survivingLeadId: string, duplicateLeadId: string) => {
+      const nowIso = new Date().toISOString();
+      setActivities((prev) => prev.map((a) => (a.lead_id === duplicateLeadId ? { ...a, lead_id: survivingLeadId } : a)));
+      setTasks((prev) => prev.map((t) => (t.lead_id === duplicateLeadId ? { ...t, lead_id: survivingLeadId } : t)));
+      setVisits((prev) => prev.map((v) => (v.lead_id === duplicateLeadId ? { ...v, lead_id: survivingLeadId } : v)));
+      setPayments((prev) => prev.map((p) => (p.lead_id === duplicateLeadId ? { ...p, lead_id: survivingLeadId } : p)));
+      setLeads((prev) =>
+        prev.map((l) =>
+          l.id === duplicateLeadId
+            ? { ...l, duplicate_of: survivingLeadId, stage: 'lost' as LeadStage, lost_reason_id: 6, lost_note: `Merged into ${survivingLeadId}`, updated_at: nowIso }
+            : l
         )
       );
-    }
-  };
-
-  // Mark a task as completed directly with 1-click
-  const completeTask = (taskId: string, outcomeNote?: string) => {
-    const targetTask = tasks.find((t) => t.id === taskId);
-    if (!targetTask) return;
-
-    const nowIso = new Date().toISOString();
-    const actId = `act-${Date.now()}`;
-    const activitySummary = outcomeNote
-      ? `Completed follow-up task "${targetTask.title}": ${outcomeNote}`
-      : `Completed follow-up task: "${targetTask.title}"`;
-
-    const newActivity: LeadActivity = {
-      id: actId,
-      lead_id: targetTask.lead_id,
-      employee_id: currentEmployee.id,
-      activity_type: (targetTask.task_type as any) || 'call',
-      direction: 'outbound',
-      outcome: 'connected',
-      summary: activitySummary,
-      next_action_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-      next_action_note: 'Routine cadence follow-up',
-      occurred_at: nowIso,
-      created_at: nowIso,
-    };
-
-    setActivities((prev) => [newActivity, ...prev]);
-
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? {
-              ...t,
-              status: 'done',
-              completed_at: nowIso,
-              activity_id: actId,
-            }
-          : t
-      )
-    );
-
-    // Update lead's next action date if currently pointing to this task
-    setLeads((prev) =>
-      prev.map((l) => {
-        if (l.id === targetTask.lead_id) {
-          return {
-            ...l,
-            next_action_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-            next_action_note: 'Routine cadence follow-up',
-            updated_at: nowIso,
-          };
-        }
-        return l;
-      })
-    );
-  };
-
-  // Reopen a previously completed task (undo)
-  const reopenTask = (taskId: string) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: 'open', completed_at: undefined } : t))
-    );
-  };
-
-  // Update a task priority (Low, Medium, High)
-  const updateTaskPriority = (taskId: string, priority: TaskPriority) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, priority } : t))
-    );
-  };
-
-  // Add quick internal note to lead
-  const addQuickNote = (leadId: string, noteText: string) => {
-    if (!noteText.trim()) return;
-    const nowIso = new Date().toISOString();
-    const newActivity: LeadActivity = {
-      id: `note-${Date.now()}`,
-      lead_id: leadId,
-      employee_id: currentEmployee.id,
-      activity_type: 'note',
-      direction: undefined,
-      outcome: undefined,
-      summary: noteText.trim(),
-      occurred_at: nowIso,
-      created_at: nowIso,
-    };
-    setActivities((prev) => [newActivity, ...prev]);
-    setLeads((prev) =>
-      prev.map((l) => (l.id === leadId ? { ...l, updated_at: nowIso } : l))
-    );
-  };
-
-  // Schedule a follow-up task (automated or manual)
-  const scheduleFollowUpTask = (data: {
-    leadId: string;
-    assignedTo?: string;
-    taskType: string;
-    title: string;
-    dueAt: string;
-    priority?: TaskPriority;
-    cadenceStep?: number;
-  }): FollowUpTask => {
-    const targetLead = leads.find((l) => l.id === data.leadId);
-    const assignedTo = data.assignedTo || targetLead?.owner_id || currentEmployee.id;
-    const nowIso = new Date().toISOString();
-    const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
-
-    const newTask: FollowUpTask = {
-      id: taskId,
-      lead_id: data.leadId,
-      assigned_to: assignedTo,
-      task_type: data.taskType,
-      title: data.title,
-      due_at: data.dueAt,
-      status: 'open',
-      priority: data.priority || 'medium',
-      cadence_step: data.cadenceStep ?? 3,
-      created_at: nowIso,
-    };
-
-    setTasks((prev) => [newTask, ...prev]);
-
-    // Also update lead's next action date and note so pipeline view is consistent
-    setLeads((prev) =>
-      prev.map((l) => {
-        if (l.id === data.leadId) {
-          return {
-            ...l,
-            next_action_at: data.dueAt,
-            next_action_note: data.title,
-            updated_at: nowIso,
-          };
-        }
-        return l;
-      })
-    );
-
-    // Record system activity audit log
-    const newActivity: LeadActivity = {
-      id: `act-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      lead_id: data.leadId,
-      employee_id: currentEmployee.id,
-      activity_type: 'system',
-      summary: `Automated Cadence: Scheduled follow-up "${data.title}" due ${new Date(data.dueAt).toLocaleString()}`,
-      next_action_at: data.dueAt,
-      next_action_note: data.title,
-      occurred_at: nowIso,
-      created_at: nowIso,
-    };
-    setActivities((prev) => [newActivity, ...prev]);
-
-    return newTask;
-  };
-
-  // Batch schedule multiple follow-up tasks (e.g. 1-click auto-schedule all dormant suggestions)
-  const batchScheduleFollowUpTasks = (
-    tasksToCreate: Array<{
-      leadId: string;
-      assignedTo?: string;
-      taskType: string;
-      title: string;
-      dueAt: string;
-      priority?: TaskPriority;
-      cadenceStep?: number;
-    }>
-  ): number => {
-    if (!tasksToCreate.length) return 0;
-    const nowIso = new Date().toISOString();
-    const createdTasks: FollowUpTask[] = [];
-    const createdActivities: LeadActivity[] = [];
-    const leadUpdatesMap = new Map<string, { dueAt: string; note: string }>();
-
-    tasksToCreate.forEach((t, idx) => {
-      const targetLead = leads.find((l) => l.id === t.leadId);
-      const assignedTo = t.assignedTo || targetLead?.owner_id || currentEmployee.id;
-      const taskId = `task-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`;
-
-      createdTasks.push({
-        id: taskId,
-        lead_id: t.leadId,
-        assigned_to: assignedTo,
-        task_type: t.taskType,
-        title: t.title,
-        due_at: t.dueAt,
-        status: 'open',
-        priority: t.priority || 'medium',
-        cadence_step: t.cadenceStep ?? 3,
-        created_at: nowIso,
-      });
-
-      createdActivities.push({
-        id: `act-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
-        lead_id: t.leadId,
-        employee_id: currentEmployee.id,
-        activity_type: 'system',
-        summary: `Automated Cadence: Auto-scheduled follow-up "${t.title}" due ${new Date(t.dueAt).toLocaleString()}`,
-        next_action_at: t.dueAt,
-        next_action_note: t.title,
-        occurred_at: nowIso,
-        created_at: nowIso,
-      });
-
-      leadUpdatesMap.set(t.leadId, { dueAt: t.dueAt, note: t.title });
-    });
-
-    setTasks((prev) => [...createdTasks, ...prev]);
-    setActivities((prev) => [...createdActivities, ...prev]);
-    setLeads((prev) =>
-      prev.map((l) => {
-        const update = leadUpdatesMap.get(l.id);
-        if (update) {
-          return {
-            ...l,
-            next_action_at: update.dueAt,
-            next_action_note: update.note,
-            updated_at: nowIso,
-          };
-        }
-        return l;
-      })
-    );
-
-    return createdTasks.length;
-  };
-
-  // Book office visit
-  const bookOfficeVisit = (data: {
-    leadId: string;
-    scheduledAt: string;
-    durationMin?: number;
-    mode: 'office' | 'video';
-    attendees: string;
-    counsellorId: string;
-    notes?: string;
-  }) => {
-    const nowIso = new Date().toISOString();
-    const newVisit: OfficeVisit = {
-      id: `visit-${Date.now()}`,
-      lead_id: data.leadId,
-      counsellor_id: data.counsellorId,
-      scheduled_at: data.scheduledAt,
-      duration_min: data.durationMin || 45,
-      mode: data.mode,
-      attendees: data.attendees,
-      status: 'booked',
-      outcome_note: data.notes,
-      created_at: nowIso,
-    };
-
-    setVisits((prev) => [newVisit, ...prev]);
-
-    // Update lead stage to office_visit_booked and elevate temperature to Hot
-    updateLead(
-      data.leadId,
-      {
-        stage: 'office_visit_booked',
-        temperature: 'hot',
-        next_action_at: data.scheduledAt,
-        next_action_note: `Office visit with ${data.attendees}`,
-      },
-      `Office visit scheduled for ${new Date(data.scheduledAt).toLocaleString()}`
-    );
-
-    // Create follow-up task
-    setTasks((prev) => [
-      {
-        id: `task-${Date.now()}`,
-        lead_id: data.leadId,
-        assigned_to: data.counsellorId,
-        task_type: 'office_visit',
-        due_at: data.scheduledAt,
-        status: 'open',
-        priority: 'high',
-        title: `Conduct ${data.mode} visit with ${data.attendees}`,
-        created_at: nowIso,
-      },
-      ...prev,
-    ]);
-
-    // Log activity
-    setActivities((prev) => [
-      {
-        id: `act-${Date.now()}`,
-        lead_id: data.leadId,
-        employee_id: currentEmployee.id,
-        activity_type: 'office_visit',
-        direction: 'inbound',
-        outcome: 'booked',
-        summary: `Booked office visit for ${new Date(data.scheduledAt).toLocaleDateString('en-GB')}. Attendees: ${data.attendees}`,
-        next_action_at: data.scheduledAt,
-        next_action_note: `Prepare university list for meeting`,
-        occurred_at: nowIso,
-        created_at: nowIso,
-      },
-      ...prev,
-    ]);
-  };
-
-  // Update visit status (Attended, No-Show, Confirmed, etc.)
-  const updateVisitStatus = (visitId: string, status: VisitStatus, outcomeNote?: string) => {
-    const nowIso = new Date().toISOString();
-    const targetVisit = visits.find((v) => v.id === visitId);
-    if (!targetVisit) return;
-
-    setVisits((prev) =>
-      prev.map((v) => (v.id === visitId ? { ...v, status, outcome_note: outcomeNote || v.outcome_note } : v))
-    );
-
-    if (status === 'attended') {
-      // Rule: After every visit, set decision follow-up within 24 hours
-      const decisionDueIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      updateLead(
-        targetVisit.lead_id,
+      markDirty('leads', duplicateLeadId);
+      const actId = genId();
+      setActivities((prev) => [
         {
-          stage: 'office_visit_done',
-          temperature: 'hot',
-          next_action_at: decisionDueIso,
-          next_action_note: '24-hour post-visit decision follow-up',
-        },
-        'Office visit attended successfully'
-      );
-
-      // Create decision task
-      setTasks((prev) => [
-        {
-          id: `task-${Date.now()}`,
-          lead_id: targetVisit.lead_id,
-          assigned_to: targetVisit.counsellor_id,
-          task_type: 'call',
-          due_at: decisionDueIso,
-          status: 'open',
-          priority: 'high',
-          title: '24-hour decision follow-up with student/parent',
+          id: actId,
+          lead_id: survivingLeadId,
+          employee_id: effectiveEmployee.id,
+          activity_type: 'system',
+          summary: `Merged duplicate lead record (${duplicateLeadId}) into this lead.`,
+          occurred_at: nowIso,
           created_at: nowIso,
         },
         ...prev,
       ]);
-    } else if (status === 'no_show') {
-      // No-show recovery: message within 30 mins, offer 2 new slots
-      const recoveryTaskIso = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-      setTasks((prev) => [
-        {
-          id: `task-${Date.now()}`,
-          lead_id: targetVisit.lead_id,
-          assigned_to: targetVisit.counsellor_id,
-          task_type: 'whatsapp',
-          due_at: recoveryTaskIso,
-          status: 'open',
-          priority: 'high',
-          title: 'No-show recovery: Send missed visit message on WhatsApp',
-          created_at: nowIso,
-        },
-        ...prev,
-      ]);
-    }
-  };
-
-  // Record payment
-  const recordPayment = (data: {
-    leadId: string;
-    package: 'guidance' | 'complete_admission';
-    paymentType: 'package_fee' | 'deposit' | 'instalment';
-    amount: number;
-    currency?: string;
-    method: string;
-    receiptRef: string;
-  }) => {
-    const nowIso = new Date().toISOString();
-    const newPayment: Payment = {
-      id: `pay-${Date.now()}`,
-      lead_id: data.leadId,
-      package: data.package,
-      payment_type: data.paymentType,
-      amount: data.amount,
-      currency: data.currency || 'BDT',
-      paid_at: nowIso,
-      method: data.method,
-      receipt_ref: data.receiptRef,
-      recorded_by: currentEmployee.id,
-      verified_by: currentEmployee.role === 'admin' || currentEmployee.role === 'manager' ? currentEmployee.id : undefined,
-      verified_at: currentEmployee.role === 'admin' || currentEmployee.role === 'manager' ? nowIso : undefined,
-    };
-
-    setPayments((prev) => [newPayment, ...prev]);
-
-    // Move lead to paid stage
-    updateLead(
-      data.leadId,
-      {
-        stage: 'paid',
-        temperature: 'hot',
-        next_action_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-        next_action_note: 'Submit application dossier to university portal',
-      },
-      `Payment received: ${data.amount} BDT for ${data.package} package (${data.receiptRef})`
-    );
-  };
-
-  // Verify payment (Manager/Admin only)
-  const verifyPayment = (paymentId: string): boolean => {
-    if (currentEmployee.role !== 'admin' && currentEmployee.role !== 'manager') {
-      return false;
-    }
-    const nowIso = new Date().toISOString();
-    setPayments((prev) =>
-      prev.map((p) => (p.id === paymentId ? { ...p, verified_by: currentEmployee.id, verified_at: nowIso } : p))
-    );
-    return true;
-  };
-
-  // Reassign lead
-  const reassignLead = (leadId: string, newOwnerId: string) => {
-    const nowIso = new Date().toISOString();
-    const newOwner = employees.find((e) => e.id === newOwnerId);
-    setLeads((prev) =>
-      prev.map((l) => (l.id === leadId ? { ...l, owner_id: newOwnerId, updated_at: nowIso } : l))
-    );
-    // Reassign open tasks
-    setTasks((prev) =>
-      prev.map((t) => (t.lead_id === leadId && t.status === 'open' ? { ...t, assigned_to: newOwnerId } : t))
-    );
-    // Log reassignment activity
-    setActivities((prev) => [
-      {
-        id: `act-${Date.now()}`,
-        lead_id: leadId,
-        employee_id: currentEmployee.id,
-        activity_type: 'system',
-        summary: `Lead reassigned to ${newOwner?.full_name || 'new counsellor'} by ${currentEmployee.full_name}`,
-        occurred_at: nowIso,
-        created_at: nowIso,
-      },
-      ...prev,
-    ]);
-  };
-
-  // Toggle accepting leads
-  const toggleCounsellorAcceptingLeads = (employeeId: string) => {
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === employeeId ? { ...e, accepts_new_leads: !e.accepts_new_leads } : e))
-    );
-  };
-
-  // Merge leads (Admin/Manager action)
-  const mergeLeads = (survivingLeadId: string, duplicateLeadId: string) => {
-    const nowIso = new Date().toISOString();
-    // Move all child records
-    setActivities((prev) =>
-      prev.map((a) => (a.lead_id === duplicateLeadId ? { ...a, lead_id: survivingLeadId } : a))
-    );
-    setTasks((prev) =>
-      prev.map((t) => (t.lead_id === duplicateLeadId ? { ...t, lead_id: survivingLeadId } : t))
-    );
-    setVisits((prev) =>
-      prev.map((v) => (v.lead_id === duplicateLeadId ? { ...v, lead_id: survivingLeadId } : v))
-    );
-    setPayments((prev) =>
-      prev.map((p) => (p.lead_id === duplicateLeadId ? { ...p, lead_id: survivingLeadId } : p))
-    );
-
-    // Mark duplicate lead
-    setLeads((prev) =>
-      prev.map((l) =>
-        l.id === duplicateLeadId
-          ? { ...l, duplicate_of: survivingLeadId, stage: 'lost', lost_reason_id: 6, lost_note: `Merged into ${survivingLeadId}`, updated_at: nowIso }
-          : l
-      )
-    );
-
-    setActivities((prev) => [
-      {
-        id: `act-${Date.now()}`,
-        lead_id: survivingLeadId,
-        employee_id: currentEmployee.id,
-        activity_type: 'system',
-        summary: `Merged duplicate lead record (${duplicateLeadId}) into this lead.`,
-        occurred_at: nowIso,
-        created_at: nowIso,
-      },
-      ...prev,
-    ]);
-  };
-
-  // Simulate Inbound Lead (for live demonstration)
-  const simulateInboundLead = (channel: 'website_assessment' | 'webinar' | 'facebook_ads'): Lead => {
-    const mockNames = [
-      'Tanvir Hasan Chowdhury',
-      'Fariha Noshin',
-      'Md. Shakil Mia',
-      'Ayesha Siddiqua',
-      'Tasnim Mahmud Niloy',
-      'Raihan Kabir',
-    ];
-    const mockCities = ['Dhaka (Uttara)', 'Chittagong', 'Sylhet', 'Rajshahi', 'Comilla'];
-    const mockDegrees = ['MBBS (Clinical Medicine)', 'B.Sc in Software Engineering', 'Civil Engineering (Tongji)', 'International Business'];
-    const randomName = mockNames[Math.floor(Math.random() * mockNames.length)];
-    const randomCity = mockCities[Math.floor(Math.random() * mockCities.length)];
-    const randomDegree = mockDegrees[Math.floor(Math.random() * mockDegrees.length)];
-    const randomNum = Math.floor(10000000 + Math.random() * 90000000);
-    const phoneRaw = `017${randomNum.toString().substring(0, 8)}`;
-
-    const sourceId =
-      channel === 'website_assessment' ? 'src-assessment' : channel === 'webinar' ? 'src-webinar' : 'src-meta';
-
-    const leadData: Partial<Lead> = {
-      full_name: randomName,
-      phone_raw: phoneRaw,
-      whatsapp_e164: `+880${phoneRaw.substring(1)}`,
-      email: `${randomName.toLowerCase().replace(/[^a-z]/g, '')}${Math.floor(Math.random() * 99)}@gmail.com`,
-      city: randomCity,
-      country: 'BD',
-      source_id: sourceId,
-      source_ref: `${channel}_sim_${Date.now()}`,
-      education_level: 'HSC Science 2026',
-      last_result: 'GPA 5.00',
-      target_degree: randomDegree,
-      target_programme: 'English Medium Programme',
-      target_intake: 'March 2027',
-      funding_confirmed: true,
-      parent_involved: true,
-      has_passport: true,
-      tags: [
-        channel === 'website_assessment' ? 'Online Assessment' : channel === 'webinar' ? 'Webinar Lead' : 'Social Ads',
-        'Inbound Simulation',
-      ],
-    };
-
-    const res = createLead(leadData);
-    const created = leads.find((l) => l.id === res.leadId) || ({} as Lead);
-    return created;
-  };
-
-  // Dynamic Lead Scoring Algorithm (1-10 weight based on activity frequency, lead source, and profile completion)
-  const getLeadScoreWeight = (lead: Lead): LeadScoreWeightResult => {
-    return calculateLeadScoreWeight(lead, activities, sources);
-  };
-
-  const calculateLeadWeight = (lead: Lead): number => {
-    return calculateLeadScoreWeight(lead, activities, sources).weight;
-  };
-
-  // SaaS Company & Organization Profile methods
-  const updateCompany = (updates: Partial<CompanyProfile>) => {
-    setCompany((prev) => {
-      const merged = { ...prev, ...updates };
-      setCompanyPresets((presets) =>
-        presets.map((p) => (p.id === prev.id ? merged : p))
-      );
-      return merged;
-    });
-  };
-
-  const switchCompanyPreset = (presetId: string) => {
-    const found = companyPresets.find((p) => p.id === presetId);
-    if (found) {
-      setCompany(found);
-    }
-  };
-
-  const createCompanyProfile = (newCompanyData: Omit<CompanyProfile, 'id'>) => {
-    const id = `comp-${Date.now().toString().slice(-6)}`;
-    const created: CompanyProfile = {
-      ...newCompanyData,
-      id,
-    };
-    setCompanyPresets((prev) => [...prev, created]);
-    setCompany(created);
-  };
-
-  const formatCurrency = (amount: number): string => {
-    return `${amount.toLocaleString()} ${company.currency_code}`;
-  };
-
-  // Reset to default
-  const resetToDefaultData = () => {
-    localStorage.removeItem('saas_crm_leads');
-    localStorage.removeItem('saas_crm_activities');
-    localStorage.removeItem('saas_crm_tasks');
-    localStorage.removeItem('saas_crm_visits');
-    localStorage.removeItem('saas_crm_payments');
-    localStorage.removeItem('saas_crm_stage_history');
-    localStorage.removeItem('saas_crm_employees');
-    localStorage.removeItem('sica_crm_leads');
-    localStorage.removeItem('sica_crm_activities');
-    localStorage.removeItem('sica_crm_tasks');
-    localStorage.removeItem('sica_crm_visits');
-    localStorage.removeItem('sica_crm_payments');
-    localStorage.removeItem('sica_crm_stage_history');
-    localStorage.removeItem('sica_crm_employees');
-    localStorage.removeItem('crm_saas_company');
-    localStorage.removeItem('crm_saas_company_presets');
-
-    const initialWithWeights = INITIAL_LEADS.map((l) => ({
-      ...l,
-      score_weight: calculateLeadScoreWeight(l, INITIAL_ACTIVITIES, INITIAL_SOURCES).weight,
-    }));
-
-    setLeads(initialWithWeights);
-    setActivities(INITIAL_ACTIVITIES);
-    setTasks(INITIAL_TASKS);
-    setVisits(INITIAL_VISITS);
-    setPayments(INITIAL_PAYMENTS);
-    setStageHistory(INITIAL_STAGE_HISTORY);
-    setEmployees(INITIAL_EMPLOYEES);
-    setCurrentEmployee(INITIAL_EMPLOYEES[0]);
-    setCompany(DEFAULT_COMPANY);
-    setCompanyPresets(INITIAL_COMPANY_PROFILES);
-  };
-
-  return (
-    <CrmContext.Provider
-      value={{
-        currentEmployee,
-        setCurrentEmployee,
-        employees,
-        setEmployees,
-        sources,
-        lostReasons,
-        leads,
-        activities,
-        tasks,
-        visits,
-        payments,
-        stageHistory,
-        company,
-        companyPresets,
-        updateCompany,
-        switchCompanyPreset,
-        createCompanyProfile,
-        formatCurrency,
-        createLead,
-        updateLead,
-        logInteraction,
-        completeTask,
-        reopenTask,
-        updateTaskPriority,
-        addQuickNote,
-        scheduleFollowUpTask,
-        batchScheduleFollowUpTasks,
-        bookOfficeVisit,
-        updateVisitStatus,
-        recordPayment,
-        verifyPayment,
-        reassignLead,
-        toggleCounsellorAcceptingLeads,
-        mergeLeads,
-        simulateInboundLead,
-        resetToDefaultData,
-        getLeadScoreWeight,
-        calculateLeadWeight,
-      }}
-    >
-      {children}
-    </CrmContext.Provider>
+      markDirty('lead_activities', actId);
+    },
+    [currentEmployee, markDirty]
   );
+
+  const bulkImportLeads = useCallback(
+    async (rows: Partial<Lead>[]): Promise<{ inserted: number; failed: Array<{ row: number; error: string }> }> => {
+      const failed: Array<{ row: number; error: string }> = [];
+      const now = new Date().toISOString();
+      const ready: Lead[] = [];
+
+      rows.forEach((row, idx) => {
+        const fullName = (row.full_name || '').trim();
+        const phoneRaw = (row.phone_raw || '').trim();
+        if (!fullName) {
+          failed.push({ row: idx + 1, error: 'full_name is required' });
+          return;
+        }
+        if (!phoneRaw) {
+          failed.push({ row: idx + 1, error: 'phone_raw is required' });
+          return;
+        }
+        // duplicates against in-memory leads
+        const dup = checkDuplicateLead(
+          { phone: phoneRaw, whatsapp: row.whatsapp_e164, email: row.email },
+          leads,
+        );
+        if (dup.isDuplicate && dup.matchedLead) {
+          failed.push({ row: idx + 1, error: `duplicate of "${dup.matchedLead.full_name}"` });
+          return;
+        }
+        ready.push({
+          id: genId(),
+          full_name: fullName,
+          phone_raw: phoneRaw,
+          phone_e164: '',
+          whatsapp_e164: (row.whatsapp_e164 || '').trim(),
+          email: (row.email || '').trim().toLowerCase(),
+          city: (row.city || 'Dhaka').trim(),
+          country: row.country || 'BD',
+          source_id: row.source_id || sources[0]?.id || '',
+          source_ref: row.source_ref || `csv_import_${Date.now()}`,
+          owner_id: row.owner_id || getNextCounsellorId(),
+          stage: 'new',
+          temperature: 'warm',
+          score: 0,
+          education_level: row.education_level || 'HSC',
+          last_result: row.last_result || '',
+          target_degree: row.target_degree || '',
+          target_programme: row.target_programme || '',
+          target_intake: row.target_intake || 'March 2027',
+          english_level: row.english_level || 'Medium of Instruction',
+          funding_confirmed: !!row.funding_confirmed,
+          parent_involved: !!row.parent_involved,
+          has_passport: !!row.has_passport,
+          first_contact_at: null,
+          next_action_at: null,
+          next_action_note: 'Imported from CSV/XLSX — schedule first contact',
+          tags: Array.isArray(row.tags) ? row.tags : [],
+          created_at: now,
+          updated_at: now,
+        });
+      });
+
+      if (!ready.length) {
+        return { inserted: 0, failed };
+      }
+
+      try {
+        const res = await api.sync({ upserts: { leads: ready } });
+        if (res.refreshedLeads?.length) {
+          setLeads((prev) => {
+            const map = new Map(prev.map((l) => [l.id, l]));
+            for (const w of res.refreshedLeads) {
+              map.set(w.id, {
+                id: w.id,
+                full_name: w.full_name,
+                phone_raw: w.phone_raw ?? '',
+                phone_e164: w.phone_e164 ?? '',
+                whatsapp_e164: w.whatsapp_e164 ?? '',
+                email: w.email ?? '',
+                city: w.city ?? '',
+                country: w.country,
+                source_id: w.source_id ?? '',
+                source_ref: w.source_ref ?? '',
+                owner_id: w.owner_id ?? '',
+                stage: w.stage as LeadStage,
+                temperature: w.temperature as LeadTemperature,
+                score: w.score,
+                score_weight: w.score_weight ?? 5,
+                education_level: w.education_level ?? '',
+                last_result: w.last_result ?? '',
+                target_degree: w.target_degree ?? '',
+                target_programme: w.target_programme ?? '',
+                target_intake: w.target_intake ?? '',
+                english_level: w.english_level ?? '',
+                funding_confirmed: !!w.funding_confirmed,
+                parent_involved: !!w.parent_involved,
+                has_passport: !!w.has_passport,
+                first_contact_at: w.first_contact_at,
+                next_action_at: w.next_action_at,
+                next_action_note: w.next_action_note ?? '',
+                lost_reason_id: w.lost_reason_id ?? undefined,
+                lost_note: w.lost_note ?? undefined,
+                nurture_until: w.nurture_until ?? undefined,
+                duplicate_of: w.duplicate_of ?? undefined,
+                tags: Array.isArray(w.tags) ? w.tags : [],
+                created_at: w.created_at,
+                updated_at: w.updated_at,
+              });
+            }
+            return [...map.values()];
+          });
+        }
+        // mark each imported lead as dirty so the offline-sync buffer is consistent
+        for (const l of ready) {
+          // nothing to push — the server already has them; markDirty would
+          // re-upsert on the next flush which is wasted work.
+        }
+        return { inserted: res.refreshedLeads?.length ?? ready.length, failed };
+      } catch (err) {
+        for (const _ of ready) {
+          failed.push({ row: -1, error: (err as Error).message });
+        }
+        return { inserted: 0, failed };
+      }
+    },
+    [leads, sources, getNextCounsellorId]
+  );
+
+  const resetToDefaultData = useCallback(() => {
+    // no-op: data lives in the database now
+  }, []);
+
+  const getLeadScoreWeight = useCallback((lead: Lead): LeadScoreWeightResult => calculateLeadScoreWeight(lead, activities, sources), [activities, sources]);
+  const calculateLeadWeight = useCallback((lead: Lead): number => calculateLeadScoreWeight(lead, activities, sources).weight, [activities, sources]);
+
+  // surface the sync error as a separate field (already declared above the gate)
+  const clearSyncError = useCallback(() => setSyncError(null), []);
+
+  const value: CrmContextType = useMemo(() => ({
+    loading,
+    error: displayError,
+    isAuthenticated,
+    signOut,
+    syncError,
+    clearSyncError,
+    currentEmployee: effectiveEmployee,
+    setCurrentEmployee,
+    employees,
+    setEmployees,
+    sources,
+    lostReasons,
+    leads,
+    activities,
+    tasks,
+    visits,
+    payments,
+    stageHistory,
+    company,
+    companyPresets,
+    updateCompany,
+    switchCompanyPreset,
+    createCompanyProfile,
+    formatCurrency,
+    createLead,
+    updateLead,
+    logInteraction,
+    completeTask,
+    reopenTask,
+    updateTaskPriority,
+    addQuickNote,
+    scheduleFollowUpTask,
+    batchScheduleFollowUpTasks,
+    bookOfficeVisit,
+    updateVisitStatus,
+    recordPayment,
+    verifyPayment,
+    reassignLead,
+    toggleCounsellorAcceptingLeads,
+    mergeLeads,
+    bulkImportLeads,
+    resetToDefaultData,
+    getLeadScoreWeight,
+    calculateLeadWeight,
+  }), [
+    loading, displayError, isAuthenticated, signOut, syncError, clearSyncError,
+    currentEmployee, setCurrentEmployee, employees, sources, lostReasons,
+    leads, activities, tasks, visits, payments, stageHistory,
+    company, companyPresets, updateCompany, switchCompanyPreset, createCompanyProfile, formatCurrency,
+    createLead, updateLead, logInteraction, completeTask, reopenTask, updateTaskPriority, addQuickNote,
+    scheduleFollowUpTask, batchScheduleFollowUpTasks, bookOfficeVisit, updateVisitStatus,
+    recordPayment, verifyPayment, reassignLead, toggleCounsellorAcceptingLeads, mergeLeads,
+    bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight,
+  ]);
+
+  // Render the gate instead of the children while the session is still
+  // resolving OR the user has no employee bound. We do this at the END
+  // of the function so all hooks above are called unconditionally across
+  // renders — putting this branch earlier violates the Rules of Hooks.
+  if (!currentEmployee) {
+    return (
+      <CrmContext.Provider value={value}>
+        <BootstrapGate loading={loading} isAuthenticated={isAuthenticated} error={displayError} signOut={signOut} />
+      </CrmContext.Provider>
+    );
+  }
+  return <CrmContext.Provider value={value}>{children}</CrmContext.Provider>;
 };
 
 export const useCrm = () => {

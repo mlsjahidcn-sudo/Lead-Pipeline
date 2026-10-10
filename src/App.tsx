@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { CrmProvider, useCrm } from './context/CrmContext';
-import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
+import { Topbar } from './components/Topbar';
+import { OverdueDrawer } from './components/OverdueDrawer';
+import { findDormantLeadsNeedingFollowUp } from './utils/automated-scheduling';
 import { InboxView } from './components/views/InboxView';
 import { KanbanView } from './components/views/KanbanView';
 import { TodayView } from './components/views/TodayView';
@@ -13,21 +16,30 @@ import { LeadDetailModal } from './components/modals/LeadDetailModal';
 import { WhatsAppScriptModal } from './components/modals/WhatsAppScriptModal';
 import { BookVisitModal } from './components/modals/BookVisitModal';
 import { RecordPaymentModal } from './components/modals/RecordPaymentModal';
-import { SimulateInboundModal } from './components/modals/SimulateInboundModal';
 import { CompanySettingsModal } from './components/modals/CompanySettingsModal';
+import { ImportLeadsModal } from './components/modals/ImportLeadsModal';
+import { GlobalSearchPalette } from './components/GlobalSearchPalette';
 import { AutomatedFollowUpScheduler } from './components/common/AutomatedFollowUpScheduler';
+import { useGlobalSearch } from './hooks/useGlobalSearch';
 import { Lead } from './types';
-import { RotateCcw } from 'lucide-react';
 
 const CrmApp: React.FC = () => {
-  const { resetToDefaultData, currentEmployee, company } = useCrm();
+  // CrmProvider guarantees currentEmployee is non-null by the time CrmApp mounts
+  const { currentEmployee, leads, activities, tasks, employees } = useCrm();
+  const { open: isSearchOpen, openPalette, closePalette } = useGlobalSearch();
+
+  // Show a small badge on the topbar "auto-schedule" button when there are
+  // any dormant leads needing follow-up. Cheap memoized count.
+  const schedulerCount = useMemo(() => {
+    return findDormantLeadsNeedingFollowUp(leads, activities, tasks, employees, 3).length;
+  }, [leads, activities, tasks, employees]);
 
   const [currentTab, setCurrentTab] = useState<string>('inbox');
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   const [isNewLeadOpen, setIsNewLeadOpen] = useState(false);
-  const [isSimulateOpen, setIsSimulateOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
   const [isCompanySettingsOpen, setIsCompanySettingsOpen] = useState(false);
 
   const [activeWhatsAppLead, setActiveWhatsAppLead] = useState<Lead | null>(null);
@@ -42,22 +54,40 @@ const CrmApp: React.FC = () => {
 
   const [todaySubFilter, setTodaySubFilter] = useState<'pending' | 'imminent' | 'overdue' | 'completed'>('pending');
 
+  const [isOverdueOpen, setIsOverdueOpen] = useState(false);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+
   React.useEffect(() => {
-    if (company?.name) {
-      document.title = `${company.name} | SaaS CRM`;
+    document.title = `${currentEmployee.full_name} · MHR Lead Pipeline`;
+  }, [currentEmployee.full_name]);
+
+  // Defense in depth: counsellors never render the manager/oversight views,
+  // even if currentTab somehow lands on one of them.
+  React.useEffect(() => {
+    if (currentEmployee.role === 'counsellor' && (currentTab === 'manager' || currentTab === 'jahid')) {
+      setCurrentTab('inbox');
     }
-  }, [company?.name]);
+  }, [currentEmployee.role, currentTab]);
+
+  const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const handleNavigateToToday = (subFilter?: 'pending' | 'imminent' | 'overdue' | 'completed') => {
-    if (subFilter) {
-      setTodaySubFilter(subFilter);
-    }
+    if (subFilter) setTodaySubFilter(subFilter);
     setCurrentTab('today');
   };
 
   const handleSelectLead = (lead: Lead) => {
     setSelectedLeadId(lead.id);
     setIsDetailOpen(true);
+  };
+
+  const handleSelectLeadById = (leadId: string) => {
+    setSelectedLeadId(leadId);
+    setIsDetailOpen(true);
+  };
+
+  const handleJumpToToday = () => {
+    setCurrentTab('today');
   };
 
   const handleOpenWhatsApp = (lead: Lead) => {
@@ -76,70 +106,94 @@ const CrmApp: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      <Navbar
-        currentTab={currentTab}
-        setCurrentTab={setCurrentTab}
-        onOpenNewLead={() => setIsNewLeadOpen(true)}
-        onOpenSimulate={() => setIsSimulateOpen(true)}
-        onNavigateToTodayTab={handleNavigateToToday}
-        onSelectLead={handleSelectLead}
-        onOpenScheduler={() => setIsSchedulerOpen(true)}
-        onOpenCompanySettings={() => setIsCompanySettingsOpen(true)}
-      />
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+      <div className="flex">
+        <Sidebar
+          currentTab={currentTab}
+          setCurrentTab={setCurrentTab}
+          onOpenNewLead={() => setIsNewLeadOpen(true)}
+          onOpenCompanySettings={() => setIsCompanySettingsOpen(true)}
+          onNavigateToToday={handleNavigateToToday}
+          onOpenScheduler={() => setIsSchedulerOpen(true)}
+          mobileOpen={isMobileNavOpen}
+          onMobileClose={() => setIsMobileNavOpen(false)}
+        />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {currentTab === 'inbox' && (
-          <InboxView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <Topbar
+            currentTab={currentTab}
+            onOpenDrawer={() => setIsOverdueOpen(true)}
+            onOpenMobileSidebar={() => setIsMobileNavOpen(true)}
             onOpenNewLead={() => setIsNewLeadOpen(true)}
-            onOpenSimulate={() => setIsSimulateOpen(true)}
+            onOpenImport={() => setIsImportOpen(true)}
+            onOpenSearch={openPalette}
+            onOpenScheduler={isManagerOrAdmin ? () => setIsSchedulerOpen(true) : undefined}
+            schedulerCount={isManagerOrAdmin ? schedulerCount : undefined}
           />
-        )}
 
-        {currentTab === 'kanban' && (
-          <KanbanView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
-            onOpenBookVisit={handleOpenBookVisit}
-            onOpenRecordPayment={handleOpenRecordPayment}
-          />
-        )}
+          <main className="flex-1 max-w-screen-2xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            {currentTab === 'inbox' && (
+              <InboxView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+                onOpenNewLead={() => setIsNewLeadOpen(true)}
+              />
+            )}
 
-        {currentTab === 'today' && (
-          <TodayView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
-            onOpenBookVisit={handleOpenBookVisit}
-            initialFilterTab={todaySubFilter}
-          />
-        )}
+            {currentTab === 'kanban' && (
+              <KanbanView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+                onOpenBookVisit={handleOpenBookVisit}
+                onOpenRecordPayment={handleOpenRecordPayment}
+              />
+            )}
 
-        {currentTab === 'visits' && (
-          <VisitsView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
-            onOpenBookVisit={handleOpenBookVisit}
-          />
-        )}
+            {currentTab === 'today' && (
+              <TodayView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+                onOpenBookVisit={handleOpenBookVisit}
+                initialFilterTab={todaySubFilter}
+              />
+            )}
 
-        {currentTab === 'manager' && (
-          <ManagerView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
-          />
-        )}
+            {currentTab === 'visits' && (
+              <VisitsView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+                onOpenBookVisit={handleOpenBookVisit}
+              />
+            )}
 
-        {currentTab === 'jahid' && (
-          <JahidOversightView
-            onSelectLead={handleSelectLead}
-            onOpenWhatsAppScript={handleOpenWhatsApp}
-          />
-        )}
+            {currentTab === 'manager' && (
+              <ManagerView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+              />
+            )}
 
-        {currentTab === 'reports' && <ReportsView />}
-      </main>
+            {currentTab === 'jahid' && (
+              <JahidOversightView
+                onSelectLead={handleSelectLead}
+                onOpenWhatsAppScript={handleOpenWhatsApp}
+              />
+            )}
+
+            {currentTab === 'reports' && <ReportsView />}
+          </main>
+        </div>
+      </div>
+
+      {/* Right-side task alerts drawer */}
+      <OverdueDrawer
+        open={isOverdueOpen}
+        onClose={() => setIsOverdueOpen(false)}
+        onSelectLead={(id) => {
+          setSelectedLeadId(id);
+          setIsDetailOpen(true);
+        }}
+      />
 
       {/* Global Modals */}
       <NewLeadModal
@@ -187,64 +241,28 @@ const CrmApp: React.FC = () => {
         }}
       />
 
-      <SimulateInboundModal
-        isOpen={isSimulateOpen}
-        onClose={() => setIsSimulateOpen(false)}
-        onSelectLead={handleSelectLead}
-      />
-
-      {/* Automated Follow-up Scheduler Modal */}
       <AutomatedFollowUpScheduler
         isOpenModal={isSchedulerOpen}
         onCloseModal={() => setIsSchedulerOpen(false)}
         onSelectLead={handleSelectLead}
       />
 
-      {/* SaaS Company & Organization Settings Modal */}
       <CompanySettingsModal
         isOpen={isCompanySettingsOpen}
         onClose={() => setIsCompanySettingsOpen(false)}
       />
 
-      {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-4 px-4 sm:px-6 lg:px-8 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-slate-800">{company.name}</span>
-            <span>·</span>
-            <span className="text-slate-600 truncate max-w-[280px] sm:max-w-none">{company.office_address}</span>
-            <span className="hidden sm:inline">·</span>
-            <span className="hidden sm:inline font-mono text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-              {company.portal_subdomain || `${company.slug}.omnileads.io`} ({company.plan_tier.toUpperCase()})
-            </span>
-          </div>
+      <ImportLeadsModal
+        isOpen={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+      />
 
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIsCompanySettingsOpen(true)}
-              className="text-blue-600 hover:text-blue-800 font-medium cursor-pointer"
-            >
-              Company Settings
-            </button>
-            <span>·</span>
-            <span>
-              Acting as: <strong className="text-slate-800">{currentEmployee.full_name} ({currentEmployee.role})</strong>
-            </span>
-            <button
-              onClick={() => {
-                if (confirm('Reset sample leads and company settings to original demonstration state?')) {
-                  resetToDefaultData();
-                }
-              }}
-              className="flex items-center gap-1 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-              title="Reset data"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Data</span>
-            </button>
-          </div>
-        </div>
-      </footer>
+      <GlobalSearchPalette
+        open={isSearchOpen}
+        onClose={closePalette}
+        onSelectLead={handleSelectLeadById}
+        onJumpToToday={handleJumpToToday}
+      />
     </div>
   );
 };

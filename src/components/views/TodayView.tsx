@@ -44,6 +44,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
     reopenTask,
     updateTaskPriority,
   } = useCrm();
+  const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [selectedCounsellorId, setSelectedCounsellorId] = useState(currentEmployee.id);
   const [taskFilterTab, setTaskFilterTab] = useState<'pending' | 'imminent' | 'overdue' | 'completed'>(
@@ -278,18 +279,22 @@ export const TodayView: React.FC<TodayViewProps> = ({
         <div className="flex items-center gap-2">
           <User className="w-4 h-4 text-slate-400" />
           <span className="text-xs text-slate-500">Queue for:</span>
-          <select
-            value={selectedCounsellorId}
-            onChange={(e) => setSelectedCounsellorId(e.target.value)}
-            className="text-xs font-semibold bg-slate-50 border border-slate-200 rounded px-2.5 py-1 text-slate-800"
-          >
-            <option value="all">All Office Staff</option>
-            {employees.map((emp) => (
-              <option key={emp.id} value={emp.id}>
-                {emp.full_name} ({emp.role})
-              </option>
-            ))}
-          </select>
+          {isManagerOrAdmin ? (
+            <select
+              value={selectedCounsellorId}
+              onChange={(e) => setSelectedCounsellorId(e.target.value)}
+              className="text-xs font-semibold bg-slate-50 border border-slate-200 rounded px-2.5 py-1 text-slate-800"
+            >
+              <option value="all">All Office Staff</option>
+              {employees.map((emp) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.full_name} ({emp.role})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-xs font-semibold text-slate-800 px-1">{currentEmployee.full_name}</span>
+          )}
         </div>
       </div>
 

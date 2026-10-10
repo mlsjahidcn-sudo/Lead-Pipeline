@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead, AutomatedTaskSuggestion, TaskPriority } from '../../types';
 import { findDormantLeadsNeedingFollowUp } from '../../utils/automated-scheduling';
@@ -52,10 +52,52 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
   const [thresholdDays, setThresholdDays] = useState<number>(3);
   const [filterCounsellor, setFilterCounsellor] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [hideLeadsWithOpenTasks, setHideLeadsWithOpenTasks] = useState<boolean>(false);
   const [scheduledLeadIds, setScheduledLeadIds] = useState<Set<string>>(new Set());
   const [justScheduledCount, setJustScheduledCount] = useState<number | null>(null);
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
+
+  // Performance: turn O(N) leads.find() calls inside the render into O(1) lookups
+  const leadById = useMemo(() => {
+    const m = new Map<string, Lead>();
+    for (const l of leads) m.set(l.id, l);
+    return m;
+  }, [leads]);
+
+  // Reset internal state on close (matches ImportLeadsModal's pattern) so
+  // reopening shows a clean slate: no leftover custom form values, no
+  // leftover "scheduled" hides, no expanded edits.
+  useEffect(() => {
+    if (!isOpenModal && !isExpanded) {
+      setEditingLeadId(null);
+      setCustomTitle('');
+      setCustomType('call');
+      setCustomPriority('medium');
+      setCustomDueTime('');
+      setHideLeadsWithOpenTasks(false);
+    }
+  }, [isOpenModal]);
+
+  // Escape-to-close (only when modal mode, not embedded card)
+  useEffect(() => {
+    if (!isOpenModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && onCloseModal) onCloseModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpenModal, onCloseModal]);
+
+  // Body scroll lock while modal is open
+  useEffect(() => {
+    if (!isOpenModal) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isOpenModal]);
 
   // Form states for inline customization
   const [customTitle, setCustomTitle] = useState('');
@@ -74,6 +116,9 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
       // Exclude already scheduled during this session
       if (scheduledLeadIds.has(sug.leadId)) return false;
 
+      // Filter: hide leads that already have an open task when the user opts in
+      if (hideLeadsWithOpenTasks && sug.hasOpenTask) return false;
+
       // Filter by counsellor
       if (filterCounsellor !== 'all' && sug.counsellorId !== filterCounsellor) {
         return false;
@@ -90,11 +135,22 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
 
       return true;
     });
-  }, [allSuggestions, filterCounsellor, searchQuery, scheduledLeadIds]);
+  }, [allSuggestions, filterCounsellor, searchQuery, hideLeadsWithOpenTasks, scheduledLeadIds]);
 
   // Counts
   const leadsWithoutOpenTasks = filteredSuggestions.filter((s) => !s.hasOpenTask);
   const highPriorityCount = filteredSuggestions.filter((s) => s.suggestedPriority === 'high').length;
+
+  // Excluded-by-session counter: how many leads are hidden because the user
+  // already scheduled them this session. Surfaced in the filter strip so the
+  // user can see the funnel.
+  const excludedCount = useMemo(() => {
+    let n = 0;
+    for (const sug of allSuggestions) {
+      if (scheduledLeadIds.has(sug.leadId)) n++;
+    }
+    return n;
+  }, [allSuggestions, scheduledLeadIds]);
 
   // Handle single task schedule
   const handleScheduleSingle = (sug: AutomatedTaskSuggestion) => {
@@ -272,10 +328,30 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
               );
             })}
           </select>
+
+          {/* Hide leads with open tasks */}
+          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={hideLeadsWithOpenTasks}
+              onChange={(e) => setHideLeadsWithOpenTasks(e.target.checked)}
+              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>Hide leads with open tasks</span>
+          </label>
         </div>
 
-        {/* Batch action button */}
+        {/* Batch action button + excluded count */}
         <div className="flex items-center gap-2">
+          {excludedCount > 0 && (
+            <span
+              className="hidden sm:inline-flex items-center gap-1 text-[11px] text-slate-500"
+              title={`${excludedCount} lead(s) are hidden because you scheduled them in this session`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              {excludedCount} already scheduled
+            </span>
+          )}
           {filteredSuggestions.length > 0 && (
             <button
               onClick={handleScheduleAll}
@@ -302,7 +378,7 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
         <div className="space-y-3">
           {filteredSuggestions.map((sug) => {
             const isEditing = editingLeadId === sug.leadId;
-            const targetLead = leads.find((l) => l.id === sug.leadId);
+            const targetLead = leadById.get(sug.leadId);
             const daysRounded = Math.floor(sug.daysDormant);
 
             return (
@@ -493,10 +569,12 @@ export const AutomatedFollowUpScheduler: React.FC<AutomatedFollowUpSchedulerProp
                     <div className="shrink-0 flex sm:flex-col items-center justify-end gap-2 border-t sm:border-t-0 sm:border-l border-slate-100 pt-3 sm:pt-0 sm:pl-4">
                       <button
                         onClick={() => handleScheduleSingle(sug)}
-                        className="w-full sm:w-36 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs transition-colors"
+                        disabled={sug.hasOpenTask}
+                        title={sug.hasOpenTask ? 'This lead already has an open task — open the lead to manage it' : undefined}
+                        className="w-full sm:w-36 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
                       >
                         <Check className="w-3.5 h-3.5" />
-                        <span>Schedule Task</span>
+                        <span>{sug.hasOpenTask ? 'Task already open' : 'Schedule Task'}</span>
                       </button>
 
                       {targetLead && onSelectLead && (

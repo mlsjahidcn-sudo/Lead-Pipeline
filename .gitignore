@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+.neon
+.mimosa/
+# Operator-only scripts (DB probes, e2e tests, cleanup, mutation probes).
+# Run against the live Neon DB; never belong on the public repo.
+scripts/

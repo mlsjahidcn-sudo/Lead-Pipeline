@@ -27,16 +27,15 @@ interface InboxViewProps {
   onSelectLead: (lead: Lead) => void;
   onOpenWhatsAppScript: (lead: Lead) => void;
   onOpenNewLead: () => void;
-  onOpenSimulate: () => void;
 }
 
 export const InboxView: React.FC<InboxViewProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
   onOpenNewLead,
-  onOpenSimulate,
 }) => {
   const { leads, activities, employees, sources, updateLead, currentEmployee, getLeadScoreWeight, company } = useCrm();
+  const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterOwner, setFilterOwner] = useState('all');
@@ -272,24 +271,26 @@ export const InboxView: React.FC<InboxViewProps> = ({
           </select>
         </div>
 
-        {/* Owner filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Owner:</span>
-          <select
-            value={filterOwner}
-            onChange={(e) => setFilterOwner(e.target.value)}
-            className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-          >
-            <option value="all">All Counsellors</option>
-            {employees
-              .filter((e) => e.role === 'counsellor' || e.role === 'manager')
-              .map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.full_name} ({e.role})
-                </option>
-              ))}
-          </select>
-        </div>
+        {/* Owner filter (managers/admins only — counsellor data is already self-scoped) */}
+        {isManagerOrAdmin && (
+          <div className="flex items-center gap-1">
+            <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Owner:</span>
+            <select
+              value={filterOwner}
+              onChange={(e) => setFilterOwner(e.target.value)}
+              className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+            >
+              <option value="all">All Counsellors</option>
+              {employees
+                .filter((e) => e.role === 'counsellor' || e.role === 'manager')
+                .map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.full_name} ({e.role})
+                  </option>
+                ))}
+            </select>
+          </div>
+        )}
 
         {/* Source filter */}
         <div className="flex items-center gap-1">
@@ -390,7 +391,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
                   <td colSpan={8} className="py-12 text-center text-slate-500">
                     <p className="font-medium text-slate-700">No student leads found matching filters.</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      Try resetting your search query or simulate an inbound lead.
+                      Try resetting your search query or add a new lead.
                     </p>
                     <div className="mt-3 flex justify-center gap-2">
                       <button
@@ -398,12 +399,6 @@ export const InboxView: React.FC<InboxViewProps> = ({
                         className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold"
                       >
                         + Create Lead
-                      </button>
-                      <button
-                        onClick={onOpenSimulate}
-                        className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-xs font-medium"
-                      >
-                        Simulate Inbound
                       </button>
                     </div>
                   </td>

@@ -53,7 +53,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onOpenBookVisit,
   onOpenRecordPayment,
 }) => {
-  const { leads, activities, employees, updateLead, getLeadScoreWeight } = useCrm();
+  const { leads, activities, employees, updateLead, getLeadScoreWeight, currentEmployee } = useCrm();
+  const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStage, setFilterStage] = useState<string>('all');
@@ -237,24 +238,26 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               </select>
             </div>
 
-            {/* Counsellor Filter */}
-            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
-              <span className="text-slate-500 font-medium text-[11px]">Counsellor:</span>
-              <select
-                value={filterOwner}
-                onChange={(e) => setFilterOwner(e.target.value)}
-                className="bg-transparent font-medium text-slate-800 focus:outline-hidden cursor-pointer"
-              >
-                <option value="all">All Counsellors</option>
-                {employees
-                  .filter((e) => e.role === 'counsellor' || e.role === 'manager')
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.full_name} ({e.role})
-                    </option>
-                  ))}
-              </select>
-            </div>
+            {/* Counsellor Filter (managers/admins only — counsellor data is already self-scoped) */}
+            {isManagerOrAdmin && (
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                <span className="text-slate-500 font-medium text-[11px]">Counsellor:</span>
+                <select
+                  value={filterOwner}
+                  onChange={(e) => setFilterOwner(e.target.value)}
+                  className="bg-transparent font-medium text-slate-800 focus:outline-hidden cursor-pointer"
+                >
+                  <option value="all">All Counsellors</option>
+                  {employees
+                    .filter((e) => e.role === 'counsellor' || e.role === 'manager')
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.full_name} ({e.role})
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
 
             {/* Urgency Filter */}
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">

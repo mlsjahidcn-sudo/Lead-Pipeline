@@ -25,7 +25,8 @@ const POPULAR_TAG_SUGGESTIONS = [
 ];
 
 export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onSelectLead }) => {
-  const { createLead, sources, employees, leads } = useCrm();
+  const { createLead, sources, employees, leads, currentEmployee } = useCrm();
+  const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [fullName, setFullName] = useState('');
   const [phoneRaw, setPhoneRaw] = useState('');
@@ -500,20 +501,26 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Assign Counsellor
               </label>
-              <select
-                value={ownerId}
-                onChange={(e) => setOwnerId(e.target.value)}
-                className="w-full text-xs px-3 py-2 border border-slate-200 rounded-md bg-white"
-              >
-                <option value="">Auto Round-Robin (Oldest Assigned First)</option>
-                {employees
-                  .filter((e) => e.role === 'counsellor' && e.is_active)
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.full_name} {e.accepts_new_leads ? '' : '(Paused)'}
-                    </option>
-                  ))}
-              </select>
+              {isManagerOrAdmin ? (
+                <select
+                  value={ownerId}
+                  onChange={(e) => setOwnerId(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-md bg-white"
+                >
+                  <option value="">Auto Round-Robin (Oldest Assigned First)</option>
+                  {employees
+                    .filter((e) => e.role === 'counsellor' && e.is_active)
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.full_name} {e.accepts_new_leads ? '' : '(Paused)'}
+                      </option>
+                    ))}
+                </select>
+              ) : (
+                <div className="w-full text-xs px-3 py-2 border border-slate-200 rounded-md bg-slate-50 text-slate-600">
+                  Assigned to you ({currentEmployee.full_name})
+                </div>
+              )}
             </div>
 
             <div>

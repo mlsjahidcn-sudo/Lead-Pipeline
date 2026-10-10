@@ -551,11 +551,17 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
               {(currentEmployee.role === 'admin' || currentEmployee.role === 'manager') && (
                 <select
                   value={lead.owner_id}
-                  onChange={(e) => reassignLead(lead.id, e.target.value)}
-                  className="text-xs bg-white border border-slate-200 rounded px-2 py-1 font-medium"
+                  onChange={(e) => {
+                    if (e.target.value === lead.owner_id) return;
+                    reassignLead(lead.id, e.target.value);
+                  }}
+                  className="text-xs bg-white border border-slate-200 rounded px-2 py-1 font-medium cursor-pointer"
                 >
+                  <option value={lead.owner_id}>
+                    {owner?.full_name ?? 'Unassigned'} (current)
+                  </option>
                   {employees
-                    .filter((e) => e.role === 'counsellor')
+                    .filter((e) => e.role === 'counsellor' && e.id !== lead.owner_id)
                     .map((e) => (
                       <option key={e.id} value={e.id}>
                         Reassign to {e.full_name}
