@@ -14,8 +14,14 @@ import { safeFetchJson as guardedJson } from './safe-fetch';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // In production the SPA bundle lives at <repo>/dist; in dev (vite dev server)
-// the bundler proxies /api/* here and serves the SPA itself.
-const DIST_DIR = path.resolve(__dirname, '..', 'dist');
+// the bundler proxies /api/* here and serves the SPA itself. The bundled
+// server.js sits at the repo root (sibling of dist/), so the resolve path
+// differs from dev where __dirname is the server/ subfolder. Try both.
+const DIST_DIR_CANDIDATES = [
+  path.resolve(__dirname, 'dist'),
+  path.resolve(__dirname, '..', 'dist'),
+];
+const DIST_DIR = DIST_DIR_CANDIDATES.find((p) => existsSync(p)) ?? DIST_DIR_CANDIDATES[1];
 const HAS_DIST = existsSync(DIST_DIR);
 
 const PORT = Number(process.env.PORT || 3002);
