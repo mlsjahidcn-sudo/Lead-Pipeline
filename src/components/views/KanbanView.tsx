@@ -7,6 +7,7 @@ import {
   getStageLabel,
 } from '../../utils/crm-logic';
 import { getLeadLastContacted, calculateDaysDormant } from '../../utils/automated-scheduling';
+import { ScoreWeightBadge, TemperaturePill } from '../common/badges';
 import {
   MapPin,
   Calendar,
@@ -19,7 +20,6 @@ import {
   X,
   Sparkles,
   Users,
-  Gauge,
 } from 'lucide-react';
 
 interface KanbanViewProps {
@@ -423,35 +423,13 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
                           <div className="text-right shrink-0 flex flex-col items-end gap-1">
                             {/* Score Weight (1-10) Badge */}
-                            <span
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold border tabular-nums shadow-2xs ${
-                                wResult.weight >= 8
-                                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                  : wResult.weight >= 5
-                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                  : 'bg-slate-100 text-slate-600 border-slate-200'
-                              }`}
-                              title={`Score Weight: ${wResult.weight}/10\n• Activity Frequency: ${wResult.activityScore}/3.5 (${wResult.activityCount} acts)\n• Lead Source: ${wResult.sourceScore}/3.0 (${wResult.sourceName})\n• Profile Completion: ${wResult.profileScore}/3.5 (${wResult.profileCompletionPercentage}%)`}
-                            >
-                              <Gauge className="w-2.5 h-2.5 text-indigo-600 shrink-0" />
-                              <span>Score {wResult.weight}/10</span>
-                            </span>
+                            <ScoreWeightBadge result={wResult} size="sm" />
 
                             <div className="flex items-center gap-1">
                               <span className="font-mono text-[10px] text-slate-400 tabular-nums">
                                 {lead.score}pt
                               </span>
-                              <span
-                                className={`text-[9px] uppercase font-bold px-1 py-0.2 rounded-xs text-center ${
-                                  lead.temperature === 'hot'
-                                    ? 'bg-rose-100 text-rose-800'
-                                    : lead.temperature === 'warm'
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-blue-100 text-blue-800'
-                                }`}
-                              >
-                                {lead.temperature}
-                              </span>
+                              <TemperaturePill temperature={lead.temperature} className="text-center" />
                             </div>
                           </div>
                         </div>

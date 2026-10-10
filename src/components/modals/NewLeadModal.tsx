@@ -327,7 +327,7 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-[11px] font-medium text-slate-600 mb-1">
                   Target Degree
@@ -337,6 +337,19 @@ export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onS
                   value={targetDegree}
                   onChange={(e) => setTargetDegree(e.target.value)}
                   placeholder="e.g. MBBS, CSE, Civil Eng, MBA"
+                  className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-md bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                  Target Programme
+                </label>
+                <input
+                  type="text"
+                  value={targetProgramme}
+                  onChange={(e) => setTargetProgramme(e.target.value)}
+                  placeholder="e.g. Clinical Medicine (English Medium)"
                   className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-md bg-white"
                 />
               </div>

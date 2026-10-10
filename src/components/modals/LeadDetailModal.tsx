@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lead, ActivityType, ActivityOutcome, LeadStage } from '../../types';
 import { useCrm } from '../../context/CrmContext';
+import { EditLeadModal } from './EditLeadModal';
 import {
   calculateSlaInfo,
   formatBdDateTime,
@@ -38,6 +39,7 @@ import {
   PlusCircle,
   CornerDownRight,
   Gauge,
+  Pencil,
 } from 'lucide-react';
 
 interface LeadDetailModalProps {
@@ -131,6 +133,9 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
   const [showLostDialog, setShowLostDialog] = useState(false);
   const [lostReasonId, setLostReasonId] = useState(1);
   const [lostNote, setLostNote] = useState('');
+
+  // Edit lead profile state
+  const [isEditOpen, setIsEditOpen] = useState(false);
 
   if (!isOpen || !lead) return null;
 
@@ -379,6 +384,17 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Edit Lead Profile */}
+            <button
+              type="button"
+              onClick={() => setIsEditOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-slate-200 rounded-md text-xs font-semibold text-slate-700 hover:bg-slate-100 hover:border-slate-300 transition-colors shadow-2xs"
+              title="Edit lead profile, target programme, qualification, tags & next action"
+            >
+              <Pencil className="w-3.5 h-3.5 text-blue-600" />
+              <span className="hidden sm:inline">Edit</span>
+            </button>
+
             {/* Stage Selector */}
             <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-2.5 py-1 shadow-2xs">
               <span className="text-[11px] text-slate-500 font-medium">Stage:</span>
@@ -652,9 +668,20 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
 
             {/* Target Studies in China */}
             <div className="space-y-2">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
-                Target Study Program
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                  Target Study Program
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setIsEditOpen(true)}
+                  className="flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition-colors"
+                  title="Edit target degree, programme & intake"
+                >
+                  <Pencil className="w-3 h-3" />
+                  <span>Edit</span>
+                </button>
+              </div>
               <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Target Degree:</span>
@@ -673,9 +700,20 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
 
             {/* Academic Qualification & Signals */}
             <div className="space-y-2">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
-                Qualification & Fit
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                  Qualification & Fit
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setIsEditOpen(true)}
+                  className="flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition-colors"
+                  title="Edit education, results, English level & qualification flags"
+                >
+                  <Pencil className="w-3 h-3" />
+                  <span>Edit</span>
+                </button>
+              </div>
               <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Education:</span>
@@ -1332,6 +1370,11 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Modal: Full Lead Edit Form (stacks above the detail modal) */}
+        {isEditOpen && (
+          <EditLeadModal lead={lead} isOpen={isEditOpen} onClose={() => setIsEditOpen(false)} />
+        )}
 
         {/* Modal: Mark Lost Reason Prompt */}
         {showLostDialog && (

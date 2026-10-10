@@ -1,27 +1,28 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
-import { Lead, LeadStage, LeadTemperature } from '../../types';
+import { Lead, LeadStage } from '../../types';
 import {
   calculateSlaInfo,
-  formatBdDateTime,
   isNextActionOverdue,
   getStageLabel,
 } from '../../utils/crm-logic';
 import { getLeadLastContacted, calculateDaysDormant } from '../../utils/automated-scheduling';
+import { exportLeadsCsv } from '../../utils/csv';
+import { Download } from 'lucide-react';
 import {
-  Search,
-  Filter,
-  Phone,
-  MessageSquare,
-  AlertTriangle,
-  ChevronRight,
-  Download,
-  Users,
-  Sparkles,
-  Gauge,
-  Star,
-  X,
-} from 'lucide-react';
+  DEFAULT_FILTERS,
+  InboxFilters,
+  SortKey,
+  SortState,
+  Density,
+  STAGE_SORT_ORDER,
+  PAGE_SIZE,
+  LeadRowData,
+} from './inbox/types';
+import LeadTableToolbar from './inbox/LeadTableToolbar';
+import LeadTable from './inbox/LeadTable';
+import LeadCard from './inbox/LeadCard';
+import BulkActionBar from './inbox/BulkActionBar';
 
 interface InboxViewProps {
   onSelectLead: (lead: Lead) => void;
@@ -29,79 +30,80 @@ interface InboxViewProps {
   onOpenNewLead: () => void;
 }
 
+const DENSITY_STORAGE_KEY = 'mhr_inbox_density';
+
+/** Natural first sort direction per column. */
+const DEFAULT_SORT_DIR: Record<SortKey, 'asc' | 'desc'> = {
+  name: 'asc',
+  intake: 'asc',
+  owner: 'asc',
+  stage: 'asc',
+  weight: 'desc',
+  sla: 'desc',
+  nextAction: 'asc',
+  created: 'desc',
+};
+
 export const InboxView: React.FC<InboxViewProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
   onOpenNewLead,
 }) => {
-  const { leads, employees, sources, updateLead, currentEmployee, getLeadScoreWeight, getLeadActivities, company } = useCrm();
+  const {
+    leads,
+    employees,
+    sources,
+    updateLead,
+    reassignLead,
+    currentEmployee,
+    getLeadScoreWeight,
+    getLeadActivities,
+    company,
+  } = useCrm();
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterOwner, setFilterOwner] = useState('all');
-  const [filterSource, setFilterSource] = useState('all');
-  const [filterTemp, setFilterTemp] = useState<string>('all');
-  const [filterStage, setFilterStage] = useState<string>('all');
-  const [filterWeight, setFilterWeight] = useState<string>('all');
-  const [filterOverdueOnly, setFilterOverdueOnly] = useState(false);
-  const [activeTab, setActiveTab] = useState<'all' | 'new' | 'hot' | 'overdue' | 'open' | 'paid'>('all');
+  const [filters, setFilters] = useState<InboxFilters>(DEFAULT_FILTERS);
+  const [sort, setSort] = useState<SortState>({ key: 'nextAction', dir: 'asc' });
+  const [density, setDensity] = useState<Density>(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem(DENSITY_STORAGE_KEY) === 'compact'
+      ? 'compact'
+      : 'comfortable'
+  );
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // Filter leads — memoized so typing in the search box re-runs one cheap
-  // pass instead of also re-running every per-row score computation below.
-  const filteredLeads = useMemo(() => leads.filter((lead) => {
-    // Exclude archived duplicates
-    if (lead.duplicate_of) return false;
+  const patchFilters = useCallback((patch: Partial<InboxFilters>) => {
+    setFilters((prev) => ({ ...prev, ...patch }));
+  }, []);
 
-    // Search query (name, phone number, current pipeline status, city, programme)
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      const matchName = lead.full_name.toLowerCase().includes(q);
-      const matchPhone =
-        (lead.phone_raw || '').toLowerCase().includes(q) ||
-        (lead.phone_e164 || '').toLowerCase().includes(q) ||
-        (lead.whatsapp_e164 || '').toLowerCase().includes(q);
-      const stageLabel = getStageLabel(lead.stage).toLowerCase();
-      const stageRaw = lead.stage.toLowerCase();
-      const stageSpaced = lead.stage.replace(/_/g, ' ').toLowerCase();
-      const matchStatus = stageLabel.includes(q) || stageRaw.includes(q) || stageSpaced.includes(q);
-      const matchCity = lead.city.toLowerCase().includes(q);
-      const matchProg =
-        lead.target_programme.toLowerCase().includes(q) ||
-        lead.target_degree.toLowerCase().includes(q);
-      if (!matchName && !matchPhone && !matchStatus && !matchCity && !matchProg) return false;
-    }
+  const clearFilters = useCallback(() => {
+    setFilters((prev) => ({ ...DEFAULT_FILTERS, activeTab: prev.activeTab }));
+  }, []);
 
-    // Tab filtering
-    if (activeTab === 'new' && lead.stage !== 'new') return false;
-    if (activeTab === 'hot' && lead.temperature !== 'hot') return false;
-    if (activeTab === 'overdue' && !isNextActionOverdue(lead)) return false;
-    if (activeTab === 'open' && ['lost', 'enrolled', 'paid'].includes(lead.stage)) return false;
-    if (activeTab === 'paid' && lead.stage !== 'paid') return false;
+  const toggleDensity = useCallback(() => {
+    setDensity((prev) => {
+      const next = prev === 'comfortable' ? 'compact' : 'comfortable';
+      try {
+        localStorage.setItem(DENSITY_STORAGE_KEY, next);
+      } catch {
+        /* storage unavailable (private mode) — preference just won't persist */
+      }
+      return next;
+    });
+  }, []);
 
-    // Overdue toggle
-    if (filterOverdueOnly && !isNextActionOverdue(lead)) return false;
+  // Reset the visible window whenever the result set identity changes
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [filters, sort.key, sort.dir]);
 
-    // Dropdown filters
-    if (filterOwner !== 'all' && lead.owner_id !== filterOwner) return false;
-    if (filterSource !== 'all' && lead.source_id !== filterSource) return false;
-    if (filterTemp !== 'all' && lead.temperature !== filterTemp) return false;
-    if (filterStage !== 'all' && lead.stage !== filterStage) return false;
-
-    // Lead score weight filter (1-10)
-    if (filterWeight !== 'all') {
-      const w = lead.score_weight || getLeadScoreWeight(lead).weight;
-      if (filterWeight === 'high' && w < 8) return false;
-      if (filterWeight === 'medium' && (w < 5 || w > 7)) return false;
-      if (filterWeight === 'low' && w > 4) return false;
-    }
-
-    return true;
-  }), [leads, searchQuery, activeTab, filterOverdueOnly, filterOwner, filterSource, filterTemp, filterStage, filterWeight, getLeadScoreWeight]);
-
-  // Row-render lookups as Map (avoid employees.find / sources.find per row)
+  // ---------------------------------------------------------------------
+  // Lookup maps — one pass each, reused by filter/sort/rows (perf pattern
+  // established by the activitiesByLeadId fix in CrmContext).
+  // ---------------------------------------------------------------------
   const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
   const sourceById = useMemo(() => new Map(sources.map((s) => [s.id, s])), [sources]);
-  // Dormancy badge per lead, computed in one pass per activities change.
+
   const dormantInfoByLeadId = useMemo(() => {
     const map = new Map<string, { daysDormant: number; isDormant: boolean }>();
     for (const lead of leads) {
@@ -115,67 +117,250 @@ export const InboxView: React.FC<InboxViewProps> = ({
     return map;
   }, [leads, getLeadActivities]);
 
-  // Export CSV helper
-  const handleExportCsv = () => {
-    const headers = [
-      'Name',
-      'Phone',
-      'Email',
-      'City',
-      'Stage',
-      'Score Weight (1-10)',
-      'Temperature',
-      'Qualification Score (0-100)',
-      'Profile Completion %',
-      'Activity Count',
-      'Target Degree',
-      'Target Intake',
-      'Owner',
-      'Next Action Due',
-      'Created At',
-    ];
-    const rows = filteredLeads.map((l) => {
-      const owner = employees.find((e) => e.id === l.owner_id);
-      const wResult = getLeadScoreWeight(l);
-      return [
-        `"${l.full_name}"`,
-        `"${l.phone_e164 || l.phone_raw}"`,
-        `"${l.email || ''}"`,
-        `"${l.city}"`,
-        `"${l.stage}"`,
-        wResult.weight,
-        `"${l.temperature}"`,
-        l.score,
-        `${wResult.profileCompletionPercentage}%`,
-        wResult.activityCount,
-        `"${l.target_degree}"`,
-        `"${l.target_intake}"`,
-        `"${owner?.full_name || 'Unassigned'}"`,
-        `"${l.next_action_at || ''}"`,
-        `"${l.created_at}"`,
-      ].join(',');
-    });
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const compSlug = (company.slug || 'crm').toLowerCase().replace(/[^a-z0-9]/g, '_');
-    a.download = `${compSlug}_leads_export_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-  };
+  // Score weight for every lead, computed once per data change — replaces
+  // the old per-row-per-render getLeadScoreWeight calls.
+  const weightByLeadId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getLeadScoreWeight>>();
+    for (const lead of leads) map.set(lead.id, getLeadScoreWeight(lead));
+    return map;
+  }, [leads, getLeadScoreWeight]);
 
-  // Metrics summary — single pass over leads
-  const { totalOpen, totalHot, totalOverdue, totalNew } = useMemo(() => {
-    let open = 0, hot = 0, overdue = 0, fresh = 0;
+  // ---------------------------------------------------------------------
+  // Filter
+  // ---------------------------------------------------------------------
+  const filteredLeads = useMemo(
+    () =>
+      leads.filter((lead) => {
+        if (lead.duplicate_of) return false;
+
+        const { searchQuery, activeTab, filterOwner, filterSource, filterTemp, filterStage, filterWeight } = filters;
+
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase().trim();
+          const matchName = lead.full_name.toLowerCase().includes(q);
+          const matchPhone =
+            (lead.phone_raw || '').toLowerCase().includes(q) ||
+            (lead.phone_e164 || '').toLowerCase().includes(q) ||
+            (lead.whatsapp_e164 || '').toLowerCase().includes(q);
+          const stageLabel = getStageLabel(lead.stage).toLowerCase();
+          const stageRaw = lead.stage.toLowerCase();
+          const stageSpaced = lead.stage.replace(/_/g, ' ').toLowerCase();
+          const matchStatus = stageLabel.includes(q) || stageRaw.includes(q) || stageSpaced.includes(q);
+          const matchCity = lead.city.toLowerCase().includes(q);
+          const matchProg =
+            lead.target_programme.toLowerCase().includes(q) ||
+            lead.target_degree.toLowerCase().includes(q);
+          if (!matchName && !matchPhone && !matchStatus && !matchCity && !matchProg) return false;
+        }
+
+        if (activeTab === 'new' && lead.stage !== 'new') return false;
+        if (activeTab === 'hot' && lead.temperature !== 'hot') return false;
+        if (activeTab === 'overdue' && !isNextActionOverdue(lead)) return false;
+        if (activeTab === 'open' && ['lost', 'enrolled', 'paid'].includes(lead.stage)) return false;
+        if (activeTab === 'paid' && lead.stage !== 'paid') return false;
+
+        if (filterOwner !== 'all' && lead.owner_id !== filterOwner) return false;
+        if (filterSource !== 'all' && lead.source_id !== filterSource) return false;
+        if (filterTemp !== 'all' && lead.temperature !== filterTemp) return false;
+        if (filterStage !== 'all' && lead.stage !== filterStage) return false;
+
+        if (filterWeight !== 'all') {
+          const w = lead.score_weight || weightByLeadId.get(lead.id)?.weight || 0;
+          if (filterWeight === 'high' && w < 8) return false;
+          if (filterWeight === 'medium' && (w < 5 || w > 7)) return false;
+          if (filterWeight === 'low' && w > 4) return false;
+        }
+
+        return true;
+      }),
+    [leads, filters, weightByLeadId]
+  );
+
+  // ---------------------------------------------------------------------
+  // Sort
+  // ---------------------------------------------------------------------
+  const sortedLeads = useMemo(() => {
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    const ownerName = (id: string) => employeeById.get(id)?.full_name || '';
+    const weightOf = (l: Lead) => l.score_weight ?? weightByLeadId.get(l.id)?.weight ?? 0;
+
+    const comparators: Record<SortKey, (a: Lead, b: Lead) => number> = {
+      name: (a, b) => a.full_name.localeCompare(b.full_name) * dir,
+      intake: (a, b) => (a.target_intake || '').localeCompare(b.target_intake || '') * dir,
+      owner: (a, b) => ownerName(a.owner_id).localeCompare(ownerName(b.owner_id)) * dir,
+      stage: (a, b) => ((STAGE_SORT_ORDER[a.stage] ?? 99) - (STAGE_SORT_ORDER[b.stage] ?? 99)) * dir,
+      weight: (a, b) => (weightOf(a) - weightOf(b)) * dir,
+      sla: (a, b) =>
+        (calculateSlaInfo(a.created_at, a.first_contact_at).hoursElapsed -
+          calculateSlaInfo(b.created_at, b.first_contact_at).hoursElapsed) *
+        dir,
+      // Nulls (no next action) always sink to the bottom regardless of direction
+      nextAction: (a, b) => {
+        const ta = a.next_action_at ? new Date(a.next_action_at).getTime() : null;
+        const tb = b.next_action_at ? new Date(b.next_action_at).getTime() : null;
+        if (ta === null && tb === null) return 0;
+        if (ta === null) return 1;
+        if (tb === null) return -1;
+        return (ta - tb) * dir;
+      },
+      created: (a, b) => a.created_at.localeCompare(b.created_at) * dir,
+    };
+
+    return [...filteredLeads].sort(comparators[sort.key]);
+  }, [filteredLeads, sort, employeeById, weightByLeadId]);
+
+  // ---------------------------------------------------------------------
+  // Visible page + precomputed row data (one pass, feeds table & cards)
+  // ---------------------------------------------------------------------
+  const visibleRows: LeadRowData[] = useMemo(
+    () =>
+      sortedLeads.slice(0, visibleCount).map((lead) => {
+        const owner = employeeById.get(lead.owner_id);
+        const dormant = dormantInfoByLeadId.get(lead.id);
+        return {
+          lead,
+          ownerName: owner?.full_name || 'Unassigned',
+          ownerRole: owner?.role || '',
+          sourceName: sourceById.get(lead.source_id)?.name || 'Direct',
+          sla: calculateSlaInfo(lead.created_at, lead.first_contact_at),
+          isOverdue: isNextActionOverdue(lead),
+          isDormant: dormant?.isDormant ?? false,
+          daysDormant: dormant?.daysDormant ?? 0,
+          weight:
+            weightByLeadId.get(lead.id) ?? {
+              weight: lead.score_weight ?? 0,
+              exactWeight: lead.score_weight ?? 0,
+              activityScore: 0,
+              activityCount: 0,
+              recentActivityBonus: false,
+              sourceScore: 0,
+              sourceChannel: '',
+              sourceName: '',
+              profileScore: 0,
+              profileCompletionPercentage: 0,
+              completedFieldsCount: 0,
+              totalFieldsCount: 0,
+              breakdown: [],
+            },
+        };
+      }),
+    [sortedLeads, visibleCount, employeeById, sourceById, dormantInfoByLeadId, weightByLeadId]
+  );
+
+  // Metrics summary + tab counts — single pass over leads
+  const { tabCounts } = useMemo(() => {
+    let open = 0,
+      hot = 0,
+      overdue = 0,
+      fresh = 0;
     for (const l of leads) {
       if (!['lost', 'enrolled', 'paid'].includes(l.stage)) open++;
       if (l.temperature === 'hot' && l.stage !== 'lost') hot++;
       if (isNextActionOverdue(l)) overdue++;
       if (l.stage === 'new') fresh++;
     }
-    return { totalOpen: open, totalHot: hot, totalOverdue: overdue, totalNew: fresh };
+    return {
+      tabCounts: { all: leads.length, new: fresh, hot, overdue, open, paid: 0 },
+      totalOpen: open,
+    };
   }, [leads]);
+
+  // ---------------------------------------------------------------------
+  // Handlers
+  // ---------------------------------------------------------------------
+  const handleSort = useCallback(
+    (key: SortKey) => {
+      setSort((prev) =>
+        prev.key === key
+          ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+          : { key, dir: DEFAULT_SORT_DIR[key] }
+      );
+    },
+    []
+  );
+
+  const handleStageChange = useCallback(
+    (lead: Lead, stage: LeadStage) => {
+      updateLead(lead.id, { stage });
+    },
+    [updateLead]
+  );
+
+  const toggleSelect = useCallback((leadId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(leadId)) next.delete(leadId);
+      else next.add(leadId);
+      return next;
+    });
+  }, []);
+
+  const allVisibleSelected =
+    visibleRows.length > 0 && visibleRows.every((r) => selectedIds.has(r.lead.id));
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const visible = visibleRows.map((r) => r.lead.id);
+      const allSelected = visible.length > 0 && visible.every((id) => prev.has(id));
+      if (allSelected) {
+        const next = new Set(prev);
+        visible.forEach((id) => next.delete(id));
+        return next;
+      }
+      return new Set([...prev, ...visible]);
+    });
+  }, [visibleRows]);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const selectedLeads = useMemo(
+    () => leads.filter((l) => selectedIds.has(l.id)),
+    [leads, selectedIds]
+  );
+
+  const handleBulkStage = useCallback(
+    (stage: LeadStage) => {
+      const ids = [...selectedIds];
+      for (const id of ids) {
+        updateLead(id, { stage }, `Bulk stage update from Inbox (${ids.length} leads)`);
+      }
+      clearSelection();
+    },
+    [selectedIds, updateLead, clearSelection]
+  );
+
+  const handleBulkReassign = useCallback(
+    (ownerId: string) => {
+      const ids = [...selectedIds];
+      for (const id of ids) {
+        reassignLead(id, ownerId);
+      }
+      clearSelection();
+    },
+    [selectedIds, reassignLead, clearSelection]
+  );
+
+  const handleExportAll = useCallback(() => {
+    exportLeadsCsv(sortedLeads, {
+      employees,
+      getWeight: (l) => weightByLeadId.get(l.id) ?? getLeadScoreWeight(l),
+      companySlug: company.slug,
+    });
+  }, [sortedLeads, employees, weightByLeadId, getLeadScoreWeight, company.slug]);
+
+  const handleExportSelected = useCallback(() => {
+    exportLeadsCsv(selectedLeads, {
+      employees,
+      getWeight: (l) => weightByLeadId.get(l.id) ?? getLeadScoreWeight(l),
+      companySlug: company.slug,
+      suffix: 'selected',
+    });
+  }, [selectedLeads, employees, weightByLeadId, getLeadScoreWeight, company.slug]);
+
+  const activeCounsellors = useMemo(
+    () => employees.filter((e) => e.role === 'counsellor' && e.is_active),
+    [employees]
+  );
 
   return (
     <div className="space-y-4">
@@ -190,26 +375,27 @@ export const InboxView: React.FC<InboxViewProps> = ({
           </p>
         </div>
 
-        {/* Quick summary stats */}
         <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium">
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-md">
             <span className="text-slate-500">New Queue:</span>
-            <span className="font-mono font-bold text-blue-600 tabular-nums">{totalNew}</span>
+            <span className="font-mono font-bold text-blue-600 tabular-nums">{tabCounts.new}</span>
           </div>
 
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-50 border border-rose-200 rounded-md">
             <span className="text-rose-700">Hot Leads:</span>
-            <span className="font-mono font-bold text-rose-700 tabular-nums">{totalHot}</span>
+            <span className="font-mono font-bold text-rose-700 tabular-nums">{tabCounts.hot}</span>
           </div>
 
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-md">
             <span className="text-amber-800">Overdue:</span>
-            <span className="font-mono font-bold text-amber-800 tabular-nums">{totalOverdue}</span>
+            <span className="font-mono font-bold text-amber-800 tabular-nums">
+              {tabCounts.overdue}
+            </span>
           </div>
 
           <button
-            onClick={handleExportCsv}
-            title="Download CSV report"
+            onClick={handleExportAll}
+            title="Download CSV report (current filters & sort)"
             className="flex items-center gap-1 px-2.5 py-1 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors text-xs"
           >
             <Download className="w-3.5 h-3.5" />
@@ -218,414 +404,83 @@ export const InboxView: React.FC<InboxViewProps> = ({
         </div>
       </div>
 
-      {/* Filter Tabs (Interactive Segmented Controls) */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200">
-        <div className="flex flex-wrap items-center gap-1">
-          {[
-            { id: 'all', label: `All (${leads.length})` },
-            { id: 'new', label: `New Inbound (${totalNew})` },
-            { id: 'hot', label: `Hot (${totalHot})` },
-            { id: 'overdue', label: `Overdue Action (${totalOverdue})` },
-            { id: 'open', label: `Open Pipeline (${totalOpen})` },
-            { id: 'paid', label: `Paid / Converted` },
-          ].map((tab) => (
+      {/* Tabs + Search + Filters */}
+      <LeadTableToolbar
+        filters={filters}
+        onPatch={patchFilters}
+        onClear={clearFilters}
+        tabCounts={tabCounts}
+        employees={employees}
+        sources={sources}
+        showOwnerFilter={isManagerOrAdmin}
+        density={density}
+        onToggleDensity={toggleDensity}
+        filteredCount={filteredLeads.length}
+      />
+
+      {/* Bulk actions */}
+      <BulkActionBar
+        count={selectedIds.size}
+        onClear={clearSelection}
+        onBulkStage={handleBulkStage}
+        onBulkReassign={isManagerOrAdmin ? handleBulkReassign : undefined}
+        counsellors={activeCounsellors}
+        onExportSelected={handleExportSelected}
+      />
+
+      {/* Desktop: sortable sticky-header table */}
+      <LeadTable
+        rows={visibleRows}
+        totalCount={filteredLeads.length}
+        sort={sort}
+        onSort={handleSort}
+        density={density}
+        selectedIds={selectedIds}
+        allVisibleSelected={allVisibleSelected}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        visibleCount={visibleCount}
+        onShowMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
+        onSelectLead={onSelectLead}
+        onOpenWhatsAppScript={onOpenWhatsAppScript}
+        onStageChange={handleStageChange}
+        onOpenNewLead={onOpenNewLead}
+      />
+
+      {/* Mobile: card list */}
+      <div className="sm:hidden space-y-2">
+        {visibleRows.length === 0 ? (
+          <div className="bg-white rounded-xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-400">
+            No student leads found matching filters.
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
+              onClick={onOpenNewLead}
+              className="block mx-auto mt-3 px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold"
             >
-              {tab.label}
+              + Create Lead
             </button>
-          ))}
-        </div>
-
-        {/* Global Search input */}
-        <div className="relative w-full sm:w-80">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search name, phone (+880...), or pipeline status..."
-            className="w-full text-xs pl-8 pr-8 py-1.5 border border-slate-200 rounded-md bg-slate-50 focus:bg-white focus:ring-1 focus:ring-slate-400 focus:outline-hidden"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 p-0.5"
-              title="Clear search query"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Global Filter Bar */}
-      <div className="flex flex-wrap items-center gap-2 text-xs bg-slate-50/80 p-2.5 rounded-lg border border-slate-200/80">
-        <div className="flex items-center gap-1 text-slate-600 font-semibold">
-          <Filter className="w-3.5 h-3.5 text-slate-500" />
-          <span>Filters:</span>
-        </div>
-
-        {/* Pipeline Stage filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Status:</span>
-          <select
-            value={filterStage}
-            onChange={(e) => setFilterStage(e.target.value)}
-            className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-          >
-            <option value="all">All Pipeline Statuses</option>
-            <option value="new">New Inbound</option>
-            <option value="contacted">Contacted</option>
-            <option value="qualified">Qualified</option>
-            <option value="consultation_booked">Consultation Booked</option>
-            <option value="consultation_done">Consultation Done</option>
-            <option value="office_visit_booked">Office Visit Booked</option>
-            <option value="office_visit_done">Office Visit Done</option>
-            <option value="paid">Paid Student</option>
-            <option value="enrolled">Enrolled</option>
-            <option value="lost">Lost / Closed</option>
-            <option value="nurture">Nurture</option>
-          </select>
-        </div>
-
-        {/* Owner filter (managers/admins only — counsellor data is already self-scoped) */}
-        {isManagerOrAdmin && (
-          <div className="flex items-center gap-1">
-            <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Owner:</span>
-            <select
-              value={filterOwner}
-              onChange={(e) => setFilterOwner(e.target.value)}
-              className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-            >
-              <option value="all">All Counsellors</option>
-              {employees
-                .filter((e) => e.role === 'counsellor' || e.role === 'manager')
-                .map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.full_name} ({e.role})
-                  </option>
-                ))}
-            </select>
           </div>
+        ) : (
+          visibleRows.map((data) => (
+            <LeadCard
+              key={data.lead.id}
+              data={data}
+              isSelected={selectedIds.has(data.lead.id)}
+              onToggleSelect={toggleSelect}
+              onSelectLead={onSelectLead}
+              onOpenWhatsAppScript={onOpenWhatsAppScript}
+              onStageChange={handleStageChange}
+            />
+          ))
         )}
-
-        {/* Source filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Source:</span>
-          <select
-            value={filterSource}
-            onChange={(e) => setFilterSource(e.target.value)}
-            className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+        {filteredLeads.length > visibleRows.length && (
+          <button
+            type="button"
+            onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+            className="w-full py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-2xs"
           >
-            <option value="all">All Lead Sources</option>
-            {sources.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Temperature filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Urgency:</span>
-          <select
-            value={filterTemp}
-            onChange={(e) => setFilterTemp(e.target.value)}
-            className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 font-medium focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-          >
-            <option value="all">All Temperatures</option>
-            <option value="hot">Hot (Score 70+)</option>
-            <option value="warm">Warm (Score 40–69)</option>
-            <option value="cold">Cold (&lt;40)</option>
-          </select>
-        </div>
-
-        {/* Lead Score Weight filter (1-10) */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">Weight:</span>
-          <select
-            value={filterWeight}
-            onChange={(e) => setFilterWeight(e.target.value)}
-            className="text-xs bg-white border border-slate-200 rounded px-2 py-1 text-indigo-900 font-medium focus:ring-1 focus:ring-indigo-500 focus:outline-hidden"
-          >
-            <option value="all">All Weights (1-10)</option>
-            <option value="high">High Priority (8–10)</option>
-            <option value="medium">Medium Priority (5–7)</option>
-            <option value="low">Low Priority (1–4)</option>
-          </select>
-        </div>
-
-        {/* Result summary and clear button */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[11px] text-slate-500 font-mono tabular-nums">
-            Showing <strong className="text-slate-900">{filteredLeads.length}</strong> of {leads.length}
-          </span>
-
-          {(filterOwner !== 'all' ||
-            filterSource !== 'all' ||
-            filterTemp !== 'all' ||
-            filterStage !== 'all' ||
-            filterWeight !== 'all' ||
-            searchQuery !== '') && (
-            <button
-              onClick={() => {
-                setFilterOwner('all');
-                setFilterSource('all');
-                setFilterTemp('all');
-                setFilterStage('all');
-                setFilterWeight('all');
-                setSearchQuery('');
-              }}
-              className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200 transition-colors"
-            >
-              <X className="w-3 h-3" />
-              <span>Clear</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Main High-Density Leads Data Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-[11px] tracking-wider">
-                <th className="py-3 px-4">Student & Location</th>
-                <th className="py-3 px-3">Contact & Quick Script</th>
-                <th className="py-3 px-3">Target in China</th>
-                <th className="py-3 px-3">Owner</th>
-                <th className="py-3 px-3">Stage</th>
-                <th className="py-3 px-3">Score Weight (1-10)</th>
-                <th className="py-3 px-3">First Contact SLA</th>
-                <th className="py-3 px-4 text-right">Next Action Due</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredLeads.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-500">
-                    <p className="font-medium text-slate-700">No student leads found matching filters.</p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Try resetting your search query or add a new lead.
-                    </p>
-                    <div className="mt-3 flex justify-center gap-2">
-                      <button
-                        onClick={onOpenNewLead}
-                        className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold"
-                      >
-                        + Create Lead
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredLeads.map((lead) => {
-                  const owner = employeeById.get(lead.owner_id);
-                  const source = sourceById.get(lead.source_id);
-                  const sla = calculateSlaInfo(lead.created_at, lead.first_contact_at);
-                  const isOverdue = isNextActionOverdue(lead);
-
-                  const dormant = dormantInfoByLeadId.get(lead.id);
-                  const daysDormant = dormant?.daysDormant ?? 0;
-                  const isDormant = dormant?.isDormant ?? false;
-
-                  return (
-                    <tr
-                      key={lead.id}
-                      onClick={() => onSelectLead(lead)}
-                      className="hover:bg-slate-50/80 cursor-pointer transition-colors group"
-                    >
-                      {/* 1. Student Name & Location */}
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
-                            {lead.full_name}
-                          </span>
-                          {isDormant && (
-                            <span
-                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300"
-                              title={`No contact for ${Math.floor(daysDormant)} days - automated follow-up suggested`}
-                            >
-                              <Sparkles className="w-2.5 h-2.5 text-blue-600" />
-                              {Math.floor(daysDormant)}d idle
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          <span>{lead.city}</span>
-                          <span className="mx-1">·</span>
-                          <span className="text-slate-400">{source?.name || 'Direct'}</span>
-                        </div>
-                      </td>
-
-                      {/* 2. Contact & Quick Script */}
-                      <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
-                          <a
-                            href={`tel:${lead.phone_e164}`}
-                            title={`Call ${lead.phone_e164}`}
-                            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors"
-                          >
-                            <Phone className="w-3.5 h-3.5" />
-                          </a>
-
-                          <button
-                            type="button"
-                            onClick={() => onOpenWhatsAppScript(lead)}
-                            title="Open WhatsApp Script"
-                            className="flex items-center gap-1 px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded font-medium text-[11px] transition-colors"
-                          >
-                            <MessageSquare className="w-3 h-3 text-emerald-600" />
-                            <span>WhatsApp</span>
-                          </button>
-                        </div>
-                        <div className="font-mono text-[11px] text-slate-400 mt-1">
-                          {lead.phone_e164 || lead.phone_raw}
-                        </div>
-                      </td>
-
-                      {/* 3. Target in China */}
-                      <td className="py-3 px-3">
-                        <div className="font-medium text-slate-800 line-clamp-1">
-                          {lead.target_degree}
-                        </div>
-                        <div className="text-[11px] text-slate-500 font-mono">
-                          {lead.target_intake}
-                        </div>
-                      </td>
-
-                      {/* 4. Owner */}
-                      <td className="py-3 px-3">
-                        <span className="font-medium text-slate-700">
-                          {owner?.full_name || 'Unassigned'}
-                        </span>
-                        <div className="text-[10px] text-slate-400 uppercase font-mono">
-                          {owner?.role}
-                        </div>
-                      </td>
-
-                      {/* 5. Stage */}
-                      <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                        <select
-                          value={lead.stage}
-                          onChange={(e) => updateLead(lead.id, { stage: e.target.value as LeadStage })}
-                          className="text-xs bg-slate-100 border border-slate-200 rounded px-2 py-1 font-medium text-slate-800 cursor-pointer"
-                        >
-                          <option value="new">New</option>
-                          <option value="contacted">Contacted</option>
-                          <option value="qualified">Qualified</option>
-                          <option value="consultation_booked">Consultation Booked</option>
-                          <option value="consultation_done">Consultation Done</option>
-                          <option value="office_visit_booked">Visit Booked</option>
-                          <option value="office_visit_done">Visit Done</option>
-                          <option value="paid">Paid</option>
-                          <option value="lost">Lost</option>
-                          <option value="nurture">Nurture</option>
-                        </select>
-                      </td>
-
-                      {/* 6. Lead Score Weight (1-10) & Factors Breakdown */}
-                      <td className="py-3 px-3">
-                        {(() => {
-                          const wResult = getLeadScoreWeight(lead);
-                          const isHigh = wResult.weight >= 8;
-                          const isMed = wResult.weight >= 5 && wResult.weight <= 7;
-                          return (
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {/* Lead Score Weight (1-10) Badge */}
-                                <span
-                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-bold border tabular-nums shadow-2xs ${
-                                    isHigh
-                                      ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                                      : isMed
-                                      ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                      : 'bg-slate-100 text-slate-700 border-slate-200'
-                                  }`}
-                                  title={`Lead Weight: ${wResult.weight}/10 (${wResult.exactWeight} raw score)\n• Activity Frequency: ${wResult.activityScore}/3.5 (${wResult.activityCount} acts logged)\n• Lead Source: ${wResult.sourceScore}/3.0 (${wResult.sourceName})\n• Profile Completion: ${wResult.profileScore}/3.5 (${wResult.profileCompletionPercentage}% complete)`}
-                                >
-                                  <Gauge className="w-3 h-3 text-indigo-600 shrink-0" />
-                                  <span>Score {wResult.weight}/10</span>
-                                </span>
-
-                                <span
-                                  className={`text-[9px] uppercase font-bold px-1 py-0.2 rounded-xs ${
-                                    lead.temperature === 'hot'
-                                      ? 'bg-rose-100 text-rose-800'
-                                      : lead.temperature === 'warm'
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'bg-blue-100 text-blue-800'
-                                  }`}
-                                >
-                                  {lead.temperature}
-                                </span>
-                              </div>
-
-                              {/* Breakdown Micro-metrics */}
-                              <div
-                                className="text-[10px] text-slate-500 font-mono flex items-center gap-1 tabular-nums"
-                                title={`Activity: ${wResult.activityScore}/3.5 | Source: ${wResult.sourceScore}/3.0 | Profile: ${wResult.profileScore}/3.5`}
-                              >
-                                <span className="text-slate-600 font-sans">Prof {wResult.profileCompletionPercentage}%</span>
-                                <span className="text-slate-300">·</span>
-                                <span>{wResult.activityCount} acts</span>
-                                <span className="text-slate-300">·</span>
-                                <span className="text-slate-400">{lead.score}pt</span>
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </td>
-
-                      {/* 7. First Contact SLA */}
-                      <td className="py-3 px-3">
-                        <span
-                          className={`inline-block font-mono text-[11px] font-semibold px-2 py-0.5 rounded ${
-                            sla.status === 'within_sla'
-                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                              : sla.status === 'warning'
-                              ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                              : 'bg-rose-50 text-rose-800 border border-rose-200'
-                          }`}
-                        >
-                          {sla.label}
-                        </span>
-                      </td>
-
-                      {/* 8. Next Action Due */}
-                      <td className="py-3 px-4 text-right">
-                        <div
-                          className={`font-mono text-xs ${
-                            isOverdue
-                              ? 'text-rose-600 font-bold flex items-center gap-1 justify-end'
-                              : 'text-slate-700'
-                          }`}
-                        >
-                          {isOverdue && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
-                          <span>{formatBdDateTime(lead.next_action_at)}</span>
-                        </div>
-                        {lead.next_action_note && (
-                          <div className="text-[11px] text-slate-400 truncate max-w-48 ml-auto mt-0.5">
-                            {lead.next_action_note}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+            Show 30 more ({visibleRows.length} of {filteredLeads.length})
+          </button>
+        )}
       </div>
     </div>
   );

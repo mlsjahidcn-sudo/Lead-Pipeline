@@ -3,6 +3,7 @@ import { useCrm } from '../../context/CrmContext';
 import { Lead, FollowUpTask, TaskPriority } from '../../types';
 import { formatBdDateTime, calculateSlaInfo } from '../../utils/crm-logic';
 import { AutomatedFollowUpScheduler } from '../common/AutomatedFollowUpScheduler';
+import { TemperaturePill } from '../common/badges';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -557,17 +558,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
                       )}
 
                       {/* 3. Lead Temperature & Score */}
-                      <span
-                        className={`text-[10px] font-semibold uppercase px-1.5 py-0.2 rounded ${
-                          lead.temperature === 'hot'
-                            ? 'bg-rose-100 text-rose-800'
-                            : lead.temperature === 'warm'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-blue-100 text-blue-800'
-                        }`}
-                      >
-                        {lead.temperature}
-                      </span>
+                      <TemperaturePill temperature={lead.temperature} size="md" />
                       <span className="text-[11px] font-mono tabular-nums text-slate-500">
                         Score {lead.score}/100
                       </span>

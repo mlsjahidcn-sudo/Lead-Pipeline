@@ -251,6 +251,21 @@ export function formatBdDateTime(isoString: string | null | undefined): string {
   });
 }
 
+/** Compact relative due label for tables/cards: "in 2d", "3h overdue", "Not set". */
+export function formatRelativeDue(iso: string | null | undefined): string {
+  if (!iso) return 'Not set';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'Not set';
+  const diffMs = then - Date.now();
+  const absMin = Math.abs(diffMs) / 60000;
+  let span: string;
+  if (absMin < 1) return 'now';
+  if (absMin < 60) span = `${Math.round(absMin)}m`;
+  else if (absMin < 60 * 24) span = `${Math.round(absMin / 60)}h`;
+  else span = `${Math.round(absMin / (60 * 24))}d`;
+  return diffMs < 0 ? `${span} overdue` : `in ${span}`;
+}
+
 export const STAGE_CONFIG: Record<
   import('../types').LeadStage,
   { label: string; description: string; badgeClass: string }
