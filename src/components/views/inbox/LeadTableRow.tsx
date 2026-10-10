@@ -76,7 +76,7 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+              <span className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors whitespace-nowrap">
                 {lead.full_name}
               </span>
               {data.isDormant && (
@@ -136,25 +136,25 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
             className="flex items-center gap-1 px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded font-medium text-[11px] transition-colors"
           >
             <MessageSquare className="w-3 h-3 text-emerald-600" />
-            <span>WhatsApp</span>
+            <span className="hidden xl:inline">WhatsApp</span>
           </button>
         </div>
-        <div className="font-mono text-[11px] text-slate-400 mt-1">
+        <div className="font-mono text-[11px] text-slate-400 mt-1 whitespace-nowrap">
           {lead.phone_e164 || lead.phone_raw}
         </div>
       </td>
 
       {/* 3. Target in China */}
-      <td className={`${py} px-3`}>
+      <td className={`${py} px-3 hidden xl:table-cell`}>
         <div className="font-medium text-slate-800 line-clamp-1 max-w-44" title={lead.target_degree}>
           {lead.target_degree}
         </div>
-        <div className="text-[11px] text-slate-500 font-mono">{lead.target_intake}</div>
+        <div className="text-[11px] text-slate-500 font-mono whitespace-nowrap">{lead.target_intake}</div>
       </td>
 
       {/* 4. Owner */}
-      <td className={`${py} px-3`}>
-        <span className="font-medium text-slate-700">{data.ownerName || 'Unassigned'}</span>
+      <td className={`${py} px-3 hidden xl:table-cell`}>
+        <span className="font-medium text-slate-700 whitespace-nowrap">{data.ownerName || 'Unassigned'}</span>
         {!compact && (
           <div className="text-[10px] text-slate-400 uppercase font-mono">{data.ownerRole}</div>
         )}
@@ -165,7 +165,7 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
         <select
           value={lead.stage}
           onChange={(e) => onStageChange(lead, e.target.value as LeadStage)}
-          className={`text-xs border rounded px-2 py-1 font-semibold cursor-pointer ${
+          className={`text-xs border rounded px-2 py-1 font-semibold cursor-pointer whitespace-nowrap max-w-40 truncate ${
             STAGE_CONFIG[lead.stage]?.badgeClass || 'bg-slate-100 text-slate-800 border-slate-200'
           }`}
           title="Quick stage change"
@@ -180,14 +180,14 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
 
       {/* 6. Score Weight + Temperature + micro-metrics */}
       <td className={`${py} px-3`}>
-        <div className={compact ? 'flex items-center gap-1.5 flex-wrap' : 'space-y-1'}>
-          <div className="flex items-center gap-1.5 flex-wrap">
+        <div className={compact ? 'flex items-center gap-1.5 flex-nowrap' : 'space-y-1'}>
+          <div className="flex items-center gap-1.5 flex-nowrap whitespace-nowrap">
             <ScoreWeightBadge result={data.weight} />
             <TemperaturePill temperature={lead.temperature} />
           </div>
           {!compact && (
             <div
-              className="text-[10px] text-slate-500 font-mono flex items-center gap-1 tabular-nums"
+              className="text-[10px] text-slate-500 font-mono flex items-center gap-1 tabular-nums whitespace-nowrap"
               title={`Activity: ${data.weight.activityScore}/3.5 | Source: ${data.weight.sourceScore}/3.0 | Profile: ${data.weight.profileScore}/3.5`}
             >
               <span className="text-slate-600 font-sans">Prof {data.weight.profileCompletionPercentage}%</span>
@@ -220,7 +220,7 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
         </div>
         {!compact && (
           <>
-            <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+            <div className="text-[10px] text-slate-400 font-mono mt-0.5 whitespace-nowrap">
               {formatBdDateTime(lead.next_action_at)}
             </div>
             {lead.next_action_note && (

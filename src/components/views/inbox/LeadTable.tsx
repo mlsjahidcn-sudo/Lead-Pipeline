@@ -62,12 +62,12 @@ const LeadTable: React.FC<LeadTableProps> = ({
   };
 
   return (
-    <div className="hidden sm:block bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+    <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
       {/* Own scroll region so the sticky header actually sticks while the
           table body scrolls (page-level sticky is unreliable inside
           overflow-x containers). */}
       <div className="overflow-auto max-h-[calc(100vh-280px)] min-h-[320px]">
-        <table className="w-full text-left text-xs border-collapse">
+        <table className="w-full text-left text-xs border-collapse min-w-[860px]">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-[11px] tracking-wider">
               <th className="sticky top-0 bg-slate-50 py-3 pl-4 pr-1 w-10 z-10">
@@ -79,26 +79,26 @@ const LeadTable: React.FC<LeadTableProps> = ({
                   title="Select all visible leads"
                 />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap">
                 <SortHeader label="Student" sortKey="name" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">Contact</th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap">Contact</th>
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap hidden xl:table-cell">
                 <SortHeader label="Target" sortKey="intake" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap hidden xl:table-cell">
                 <SortHeader label="Owner" sortKey="owner" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap">
                 <SortHeader label="Stage" sortKey="stage" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap">
                 <SortHeader label="Score" sortKey="weight" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 z-10 whitespace-nowrap">
                 <SortHeader label="SLA" sortKey="sla" />
               </th>
-              <th className="sticky top-0 bg-slate-50 py-3 px-3 pr-4 z-10">
+              <th className="sticky top-0 bg-slate-50 py-3 px-3 pr-4 z-10 whitespace-nowrap">
                 <SortHeader label="Next Action" sortKey="nextAction" align="right" />
               </th>
             </tr>

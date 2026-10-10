@@ -447,8 +447,8 @@ export const InboxView: React.FC<InboxViewProps> = ({
         onOpenNewLead={onOpenNewLead}
       />
 
-      {/* Mobile: card list */}
-      <div className="sm:hidden space-y-2">
+      {/* Narrow viewports: card list (table needs ≥lg to breathe) */}
+      <div className="lg:hidden space-y-2">
         {visibleRows.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-400">
             No student leads found matching filters.
