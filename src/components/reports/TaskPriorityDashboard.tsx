@@ -133,11 +133,13 @@ export const TaskPriorityDashboard: React.FC = () => {
       const medTasks = wTasks.filter((t) => (t.priority || 'medium') === 'medium');
       const lowTasks = wTasks.filter((t) => (t.priority || 'medium') === 'low');
 
+      // Weeks without tasks of a priority render as chart gaps (null), not
+      // fabricated rates — the old 80/60/50 fallbacks overstated performance.
       return {
         period: w.name,
-        highRate: highTasks.length > 0 ? calcRate('high') : 80,
-        mediumRate: medTasks.length > 0 ? calcRate('medium') : 60,
-        lowRate: lowTasks.length > 0 ? calcRate('low') : 50,
+        highRate: highTasks.length > 0 ? calcRate('high') : null,
+        mediumRate: medTasks.length > 0 ? calcRate('medium') : null,
+        lowRate: lowTasks.length > 0 ? calcRate('low') : null,
         totalTasks: wTasks.length,
       };
     });
@@ -459,6 +461,7 @@ export const TaskPriorityDashboard: React.FC = () => {
                 strokeWidth={2.5}
                 dot={{ r: 4, fill: '#e11d48' }}
                 activeDot={{ r: 6 }}
+                connectNulls={false}
               />
               <Line
                 type="monotone"
@@ -468,6 +471,7 @@ export const TaskPriorityDashboard: React.FC = () => {
                 strokeWidth={2}
                 dot={{ r: 3.5, fill: '#f59e0b' }}
                 activeDot={{ r: 5 }}
+                connectNulls={false}
               />
               <Line
                 type="monotone"
@@ -477,6 +481,7 @@ export const TaskPriorityDashboard: React.FC = () => {
                 strokeWidth={1.5}
                 strokeDasharray="4 4"
                 dot={{ r: 3, fill: '#64748b' }}
+                connectNulls={false}
                 activeDot={{ r: 5 }}
               />
             </LineChart>

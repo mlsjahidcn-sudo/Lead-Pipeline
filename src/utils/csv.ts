@@ -1,5 +1,57 @@
 import { Lead, Employee, LeadScoreWeightResult, LeadSource } from '../types';
 import { getStageLabel, isNextActionOverdue } from './crm-logic';
+import { CounsellorStat, SourceStat } from './analytics';
+
+const downloadCsvBlob = (content: string, filename: string) => {
+  // UTF-8 BOM keeps Bangla + Excel happy
+  const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+/** Counsellor performance scorecard export (Reports tab). */
+export function exportCounsellorScorecardCsv(stats: CounsellorStat[], companySlug: string): void {
+  const headers = [
+    'Counsellor', 'Role', 'Leads', 'Open Leads', 'Contacted', 'Contact Rate %',
+    'Visit-Stage Leads', 'Visits Attended', 'Paid', 'Revenue',
+    'Tasks', 'Tasks Done', 'Task Completion %', 'SLA Eligible', 'SLA Compliant', 'SLA Compliance %',
+  ];
+  const rows = stats.map((s) =>
+    [
+      `"${s.name}"`, `"${s.role}"`, s.leads, s.openLeads, s.contactedLeads, s.contactRate.toFixed(1),
+      s.visitStageLeads, s.visitsAttended, s.paid, s.revenue,
+      s.tasksTotal, s.tasksDone, s.taskCompletionRate.toFixed(1), s.slaEligible, s.slaCompliant, s.slaComplianceRate.toFixed(1),
+    ].join(',')
+  );
+  downloadCsvBlob(
+    [headers.join(','), ...rows].join('\r\n'),
+    `${companySlug || 'crm'}_counsellor_scorecard_${new Date().toISOString().slice(0, 10)}.csv`
+  );
+}
+
+/** Source ROI scorecard export (Reports tab). */
+export function exportSourceScorecardCsv(stats: SourceStat[], companySlug: string): void {
+  const headers = [
+    'Source', 'Channel', 'Leads', 'Contacted', 'Visit-Stage', 'Paid / Enrolled',
+    'Conversion %', 'Revenue',
+  ];
+  const rows = stats.map((s) =>
+    [
+      `"${s.name}"`, `"${s.channel}"`, s.leads, s.contacted, s.visits, s.paid,
+      s.conversionRate.toFixed(1), s.revenue,
+    ].join(',')
+  );
+  downloadCsvBlob(
+    [headers.join(','), ...rows].join('\r\n'),
+    `${companySlug || 'crm'}_source_scorecard_${new Date().toISOString().slice(0, 10)}.csv`
+  );
+}
 
 /**
  * Export leads to CSV and trigger a browser download. Extracted from

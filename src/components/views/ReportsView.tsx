@@ -1,6 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { TaskPriorityDashboard } from '../reports/TaskPriorityDashboard';
+import { CounsellorPerformanceTab } from '../reports/CounsellorPerformanceTab';
+import { SourceRoiTab } from '../reports/SourceRoiTab';
+import { SlaTrendChart } from '../reports/SlaTrendChart';
 import { Lead } from '../../types';
 import {
   getStageLabel,
@@ -34,7 +37,7 @@ import {
 export const ReportsView: React.FC = () => {
   const { leads, payments, employees, visits, sources, company } = useCrm();
 
-  const [activeReportTab, setActiveReportTab] = useState<'daily' | 'weekly' | 'tasks' | 'sql' | 'export'>('daily');
+  const [activeReportTab, setActiveReportTab] = useState<'daily' | 'weekly' | 'counsellors' | 'sources' | 'sla' | 'tasks' | 'sql' | 'export'>('daily');
   const [copiedSql, setCopiedSql] = useState(false);
   const [hasRecentlyExported, setHasRecentlyExported] = useState(false);
   const [exportScope, setExportScope] = useState<'all' | 'open' | 'hot' | 'paid' | 'overdue'>('all');
@@ -229,6 +232,30 @@ where l.temperature = 'hot'
               }`}
             >
               Funnel & Scorecard
+            </button>
+            <button
+              onClick={() => setActiveReportTab('counsellors')}
+              className={`px-3 py-1 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                activeReportTab === 'counsellors' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Counsellor Performance
+            </button>
+            <button
+              onClick={() => setActiveReportTab('sources')}
+              className={`px-3 py-1 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                activeReportTab === 'sources' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Source ROI
+            </button>
+            <button
+              onClick={() => setActiveReportTab('sla')}
+              className={`px-3 py-1 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                activeReportTab === 'sla' ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              SLA Trend
             </button>
             <button
               onClick={() => setActiveReportTab('tasks')}
@@ -464,6 +491,15 @@ where l.temperature = 'hot'
           </div>
         </div>
       )}
+
+      {/* Tab: Counsellor Performance */}
+      {activeReportTab === 'counsellors' && <CounsellorPerformanceTab />}
+
+      {/* Tab: Source ROI */}
+      {activeReportTab === 'sources' && <SourceRoiTab />}
+
+      {/* Tab: SLA compliance trend */}
+      {activeReportTab === 'sla' && <SlaTrendChart />}
 
       {/* Tab 3: Task Completion by Priority Dashboard (Recharts Visualizations) */}
       {activeReportTab === 'tasks' && <TaskPriorityDashboard />}
