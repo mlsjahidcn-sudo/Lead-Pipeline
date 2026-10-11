@@ -72,6 +72,12 @@ export const EditLeadModal: React.FC<EditLeadModalProps> = ({ lead, isOpen, onCl
 
   const phoneNorm = normalizeBdPhone(phoneRaw);
   const whatsappNorm = whatsappRaw ? normalizeBdPhone(whatsappRaw) : phoneNorm;
+  // Imported leads can carry non-BD numbers — only enforce BD format when
+  // the phone was actually edited; an untouched number saves as-is.
+  const phoneUnchanged =
+    phoneRaw.trim() === (lead.phone_raw || lead.phone_e164 || '').trim();
+  const phoneOk = phoneNorm.isValidBd || phoneUnchanged;
+  const effectivePhoneE164 = phoneNorm.isValidBd ? phoneNorm.e164! : lead.phone_e164;
 
   // Score preview reflects the edited values (stage bonus stays as-is)
   const scorePreview = calculateLeadScore({
@@ -87,13 +93,15 @@ export const EditLeadModal: React.FC<EditLeadModalProps> = ({ lead, isOpen, onCl
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!fullName.trim() || !phoneRaw.trim()) return;
-    if (!phoneNorm.isValidBd) return; // invalid phone blocks save (warning shown below)
+    if (!phoneOk) return; // edited into an invalid BD number blocks save
 
     updateLead(lead.id, {
       full_name: fullName.trim(),
       phone_raw: phoneRaw.trim(),
-      phone_e164: phoneNorm.e164 || lead.phone_e164,
-      whatsapp_e164: whatsappNorm.e164 || phoneNorm.e164 || '',
+      phone_e164: effectivePhoneE164,
+      whatsapp_e164: whatsappRaw
+        ? whatsappNorm.e164 || lead.whatsapp_e164
+        : effectivePhoneE164 || lead.whatsapp_e164 || '',
       email: email.trim() ? email.trim().toLowerCase() : '',
       city: city.trim() || 'Dhaka',
       source_id: sourceId,
@@ -179,21 +187,19 @@ export const EditLeadModal: React.FC<EditLeadModalProps> = ({ lead, isOpen, onCl
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-semibold text-slate-700">Phone *</label>
-                {phoneRaw && (
-                  <span
-                    className={`text-[11px] flex items-center gap-1 font-mono ${
-                      phoneNorm.isValidBd ? 'text-emerald-600' : 'text-rose-600'
-                    }`}
-                  >
-                    {phoneNorm.isValidBd ? (
-                      <>
-                        <CheckCircle2 className="w-3 h-3" /> Valid BD ({phoneNorm.e164})
-                      </>
-                    ) : (
-                      <>
-                        <AlertTriangle className="w-3 h-3" /> Invalid BD number
-                      </>
-                    )}
+                {phoneRaw && !phoneNorm.isValidBd && !phoneUnchanged && (
+                  <span className="text-[11px] flex items-center gap-1 font-mono text-rose-600">
+                    <AlertTriangle className="w-3 h-3" /> Invalid BD number
+                  </span>
+                )}
+                {phoneRaw && phoneNorm.isValidBd && (
+                  <span className="text-[11px] flex items-center gap-1 font-mono text-emerald-600">
+                    <CheckCircle2 className="w-3 h-3" /> Valid BD ({phoneNorm.e164})
+                  </span>
+                )}
+                {phoneRaw && !phoneNorm.isValidBd && phoneUnchanged && (
+                  <span className="text-[11px] font-mono text-slate-400">
+                    Non-BD number (unchanged)
                   </span>
                 )}
               </div>
@@ -531,7 +537,7 @@ export const EditLeadModal: React.FC<EditLeadModalProps> = ({ lead, isOpen, onCl
             </button>
             <button
               type="submit"
-              disabled={!phoneNorm.isValidBd}
+              disabled={!phoneOk}
               className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-md shadow-xs transition-colors"
             >
               Save Changes
