@@ -1,5 +1,37 @@
 import { Lead, LeadActivity, FollowUpTask, Employee, AutomatedTaskSuggestion, TaskPriority, ActivityType } from '../types';
 
+// ---------------------------------------------------------------------------
+// Shared task-window primitives — TodayView's tabs and the topbar bell badge
+// previously implemented these twice with different semantics (180min vs 24h
+// "upcoming"), so their counts disagreed. All surfaces now build on these.
+// ---------------------------------------------------------------------------
+
+/** Open task whose due time is already in the past. */
+export const isTaskOverdue = (t: FollowUpTask, now = Date.now()): boolean =>
+  t.status === 'open' && new Date(t.due_at).getTime() < now;
+
+/** Open task due within the next `minutes` (not overdue — between now and now+minutes). */
+export const isTaskDueWithin = (t: FollowUpTask, minutes: number, now = Date.now()): boolean => {
+  if (t.status !== 'open') return false;
+  const due = new Date(t.due_at).getTime();
+  return due >= now && due <= now + minutes * 60 * 1000;
+};
+
+/** Open task due on the same calendar day as `now` (any time today, incl. earlier today). */
+export const isTaskDueToday = (t: FollowUpTask, now = new Date()): boolean => {
+  if (t.status !== 'open') return false;
+  const due = new Date(t.due_at);
+  return (
+    due.getFullYear() === now.getFullYear() &&
+    due.getMonth() === now.getMonth() &&
+    due.getDate() === now.getDate()
+  );
+};
+
+/** Bell/drawer "upcoming": open, not overdue, due today or within the next 24h. */
+export const isTaskUpcoming24h = (t: FollowUpTask, now = Date.now()): boolean =>
+  isTaskDueToday(t, new Date(now)) || isTaskDueWithin(t, 24 * 60, now);
+
 /**
  * Compute a sensible due time for a follow-up task.
  *

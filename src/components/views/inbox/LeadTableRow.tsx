@@ -1,5 +1,5 @@
 import React from 'react';
-import { Phone, MessageSquare, AlertTriangle, Sparkles } from 'lucide-react';
+import { Phone, MessageSquare, AlertTriangle, Sparkles, CheckCircle2 } from 'lucide-react';
 import { Lead, LeadStage, LeadTemperature } from '../../../types';
 import {
   STAGE_CONFIG,
@@ -32,6 +32,7 @@ interface LeadTableRowProps {
   onSelectLead: (lead: Lead) => void;
   onOpenWhatsAppScript: (lead: Lead) => void;
   onStageChange: (lead: Lead, stage: LeadStage) => void;
+  onQuickComplete: (task: NonNullable<LeadRowData['nextOpenTask']>) => void;
 }
 
 const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
@@ -42,6 +43,7 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
   onStageChange,
+  onQuickComplete,
 }) => {
   const { lead } = data;
   const compact = density === 'compact';
@@ -206,16 +208,31 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
 
       {/* 8. Next Action Due */}
       <td className={`${py} px-3 pr-4 text-right`}>
-        <div
-          className={`font-mono text-xs ${
-            data.isOverdue
-              ? 'text-rose-600 font-bold flex items-center gap-1 justify-end'
-              : 'text-slate-700'
-          }`}
-          title={formatBdDateTime(lead.next_action_at)}
-        >
-          {data.isOverdue && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
-          <span>{formatRelativeDue(lead.next_action_at)}</span>
+        <div className="flex items-center justify-end gap-1.5">
+          {data.nextOpenTask && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickComplete(data.nextOpenTask!);
+              }}
+              className="p-1 rounded text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 transition-colors shrink-0"
+              title={`Quick-complete next task: "${data.nextOpenTask.title}"`}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+            </button>
+          )}
+          <div
+            className={`font-mono text-xs ${
+              data.isOverdue
+                ? 'text-rose-600 font-bold flex items-center gap-1 justify-end'
+                : 'text-slate-700'
+            }`}
+            title={formatBdDateTime(lead.next_action_at)}
+          >
+            {data.isOverdue && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
+            <span>{formatRelativeDue(lead.next_action_at)}</span>
+          </div>
         </div>
         {!compact && (
           <>

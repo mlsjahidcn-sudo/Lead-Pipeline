@@ -19,6 +19,7 @@ interface LeadTableProps {
   onSelectLead: (lead: Lead) => void;
   onOpenWhatsAppScript: (lead: Lead) => void;
   onStageChange: (lead: Lead, stage: LeadStage) => void;
+  onQuickComplete: (task: NonNullable<LeadRowData['nextOpenTask']>) => void;
   onOpenNewLead: () => void;
 }
 
@@ -37,6 +38,7 @@ const LeadTable: React.FC<LeadTableProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
   onStageChange,
+  onQuickComplete,
   onOpenNewLead,
 }) => {
   const SortHeader: React.FC<{ label: string; sortKey: SortKey; align?: 'left' | 'right' }> = ({
@@ -132,6 +134,7 @@ const LeadTable: React.FC<LeadTableProps> = ({
                   onSelectLead={onSelectLead}
                   onOpenWhatsAppScript={onOpenWhatsAppScript}
                   onStageChange={onStageChange}
+                  onQuickComplete={onQuickComplete}
                 />
               ))
             )}

@@ -4,6 +4,7 @@ import { Lead, FollowUpTask, TaskPriority } from '../../types';
 import { formatBdDateTime, calculateSlaInfo } from '../../utils/crm-logic';
 import { AutomatedFollowUpScheduler } from '../common/AutomatedFollowUpScheduler';
 import { TemperaturePill } from '../common/badges';
+import { TaskRow } from '../common/TaskRow';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -15,11 +16,9 @@ import {
   User,
   Check,
   RotateCcw,
-  MapPin,
+  Copy,
   CheckCheck,
   Flame,
-  AlertCircle,
-  Flag,
   Filter,
 } from 'lucide-react';
 
@@ -41,9 +40,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
     visits,
     employees,
     currentEmployee,
+    company,
     completeTask,
     reopenTask,
-    updateTaskPriority,
   } = useCrm();
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
@@ -53,6 +52,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   );
   const [priorityFilter, setPriorityFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
   const [lastCompletedTaskId, setLastCompletedTaskId] = useState<string | null>(null);
+  const [copiedBrief, setCopiedBrief] = useState(false);
 
   // Sync initialFilterTab when updated from external navigation (e.g. Navbar badge links)
   useEffect(() => {
@@ -81,119 +81,6 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
   const now = new Date();
   const todayStr = now.toISOString().slice(0, 10);
-
-  // Priority indicator helper
-  const getPriorityIndicator = (priority?: TaskPriority) => {
-    const p = priority || 'medium';
-    if (p === 'high') {
-      return {
-        level: 'high' as const,
-        label: 'High Priority',
-        shortLabel: 'High',
-        badgeClass: 'bg-rose-50 text-rose-800 border-rose-200',
-        dotColor: 'bg-rose-600',
-        textColor: 'text-rose-700 font-bold',
-        icon: Flame,
-      };
-    }
-    if (p === 'medium') {
-      return {
-        level: 'medium' as const,
-        label: 'Medium Priority',
-        shortLabel: 'Medium',
-        badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
-        dotColor: 'bg-amber-500',
-        textColor: 'text-amber-800 font-semibold',
-        icon: AlertCircle,
-      };
-    }
-    return {
-      level: 'low' as const,
-      label: 'Low Priority',
-      shortLabel: 'Low',
-      badgeClass: 'bg-slate-100 text-slate-700 border-slate-200',
-      dotColor: 'bg-slate-400',
-      textColor: 'text-slate-600 font-medium',
-      icon: Flag,
-    };
-  };
-
-  // Deadline calculation helper
-  const getDeadlineIndicator = (dueAt: string) => {
-    const dueTime = new Date(dueAt).getTime();
-    const nowTime = now.getTime();
-    const diffMinutes = Math.floor((dueTime - nowTime) / (1000 * 60));
-
-    if (diffMinutes < 0) {
-      const overdueMins = Math.abs(diffMinutes);
-      const hours = Math.floor(overdueMins / 60);
-      const mins = overdueMins % 60;
-      return {
-        urgency: 'overdue' as const,
-        badgeText: hours > 0 ? `Overdue by ${hours}h ${mins}m` : `Overdue by ${mins}m`,
-        badgeClass: 'bg-rose-50 text-rose-800 border-rose-200',
-        dotColor: 'bg-rose-600',
-        textColor: 'text-rose-700 font-bold',
-        cardBorder: 'border-rose-200 hover:border-rose-300',
-        isCritical: true,
-      };
-    }
-
-    if (diffMinutes <= 60) {
-      return {
-        urgency: 'imminent' as const,
-        badgeText: `Due in ${diffMinutes}m (Urgent)`,
-        badgeClass: 'bg-rose-50 text-rose-800 border-rose-200',
-        dotColor: 'bg-rose-500',
-        textColor: 'text-rose-700 font-bold',
-        cardBorder: 'border-rose-200 hover:border-rose-300',
-        isCritical: true,
-      };
-    }
-
-    if (diffMinutes <= 180) {
-      const hours = Math.floor(diffMinutes / 60);
-      const mins = diffMinutes % 60;
-      return {
-        urgency: 'soon' as const,
-        badgeText: `Due in ${hours}h ${mins}m`,
-        badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
-        dotColor: 'bg-amber-500',
-        textColor: 'text-amber-800 font-semibold',
-        cardBorder: 'border-amber-200 hover:border-amber-300',
-        isCritical: false,
-      };
-    }
-
-    // Due today
-    const dueTimeFormatted = new Date(dueAt).toLocaleTimeString('en-GB', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    if (dueAt.startsWith(todayStr)) {
-      return {
-        urgency: 'today' as const,
-        badgeText: `Due today at ${dueTimeFormatted}`,
-        badgeClass: 'bg-blue-50 text-blue-800 border-blue-200',
-        dotColor: 'bg-blue-500',
-        textColor: 'text-blue-800 font-medium',
-        cardBorder: 'border-slate-200 hover:border-blue-300',
-        isCritical: false,
-      };
-    }
-
-    // Due upcoming (tomorrow or later)
-    return {
-      urgency: 'upcoming' as const,
-      badgeText: `Due ${formatBdDateTime(dueAt)}`,
-      badgeClass: 'bg-slate-50 text-slate-700 border-slate-200',
-      dotColor: 'bg-slate-400',
-      textColor: 'text-slate-600',
-      cardBorder: 'border-slate-200 hover:border-slate-300',
-      isCritical: false,
-    };
-  };
 
   // 1. Overdue Tasks
   const overdueTasks = counsellorTasks.filter(
@@ -255,6 +142,32 @@ export const TodayView: React.FC<TodayViewProps> = ({
     setLastCompletedTaskId(null);
   };
 
+  // Self-scoped daily brief (plain text, copied to clipboard)
+  const handleCopyDailyBrief = () => {
+    const activeLeads = counsellorLeads.filter((l) => !['lost', 'enrolled', 'paid'].includes(l.stage) && !l.duplicate_of);
+    const hotActive = activeLeads.filter((l) => l.temperature === 'hot');
+    const scopeName =
+      selectedCounsellorId === 'all'
+        ? 'All office staff'
+        : employees.find((e) => e.id === selectedCounsellorId)?.full_name || currentEmployee.full_name;
+    const brief = `${company.name.toUpperCase()} - DAILY BRIEF
+Counsellor: ${scopeName}
+Date: ${new Date().toLocaleDateString('en-GB')}
+
+TASKS
+- Overdue: ${overdueTasks.length}
+- Due soon / today: ${imminentAndTodayTasks.length}
+- High priority open: ${highPriorityTasks.length}
+
+LEADS
+- New inbound awaiting first contact (2h SLA): ${uncontactedNewLeads.length}
+- Active pipeline: ${activeLeads.length} (hot: ${hotActive.length})
+- Visits today: ${todayVisits.length}`;
+    navigator.clipboard.writeText(brief);
+    setCopiedBrief(true);
+    setTimeout(() => setCopiedBrief(false), 2000);
+  };
+
   // Select tasks list based on active tab and priority filter
   let baseTasks: FollowUpTask[] = [];
   if (taskFilterTab === 'overdue') {
@@ -285,7 +198,16 @@ export const TodayView: React.FC<TodayViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleCopyDailyBrief}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
+            title="Copy a plain-text daily brief for this queue (paste into WhatsApp/email)"
+          >
+            {copiedBrief ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>{copiedBrief ? 'Copied!' : 'Copy daily brief'}</span>
+          </button>
           <User className="w-4 h-4 text-slate-400" />
           <span className="text-xs text-slate-500">Queue for:</span>
           {isManagerOrAdmin ? (
@@ -517,148 +439,16 @@ export const TodayView: React.FC<TodayViewProps> = ({
               const lead = leadById.get(task.lead_id);
               if (!lead) return null;
 
-              const deadline = getDeadlineIndicator(task.due_at);
-              const priorityInfo = getPriorityIndicator(task.priority);
-              const PriorityIcon = priorityInfo.icon;
-              const isCompleted = task.status === 'done';
-
               return (
-                <div
+                <TaskRow
                   key={task.id}
-                  onClick={() => onSelectLead(lead)}
-                  className={`p-4 hover:bg-slate-50/90 transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 cursor-pointer group ${
-                    isCompleted ? 'bg-slate-50/50 opacity-80' : ''
-                  }`}
-                >
-                  {/* Left: Task info, Lead details & Priority & Deadline badges */}
-                  <div className="space-y-1.5 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {/* 1. Color-coded Priority Indicator */}
-                      <div
-                        className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded border ${priorityInfo.badgeClass}`}
-                        title={`Task Priority: ${priorityInfo.label}`}
-                      >
-                        <PriorityIcon className="w-3 h-3 shrink-0" />
-                        <span>{priorityInfo.label}</span>
-                      </div>
-
-                      {/* 2. Visual Deadline Indicator Badge */}
-                      {isCompleted ? (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-semibold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200">
-                          <CheckCheck className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Done on {formatBdDateTime(task.completed_at || task.due_at)}</span>
-                        </span>
-                      ) : (
-                        <div
-                          className={`inline-flex items-center gap-1.5 text-[11px] font-mono font-semibold px-2 py-0.5 rounded border ${deadline.badgeClass}`}
-                        >
-                          <span className={`w-1.5 h-1.5 rounded-full ${deadline.dotColor} shrink-0`} />
-                          <span>{deadline.badgeText}</span>
-                        </div>
-                      )}
-
-                      {/* 3. Lead Temperature & Score */}
-                      <TemperaturePill temperature={lead.temperature} size="md" />
-                      <span className="text-[11px] font-mono tabular-nums text-slate-500">
-                        Score {lead.score}/100
-                      </span>
-
-                      {task.cadence_step !== undefined && (
-                        <span className="text-[10px] font-mono uppercase text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded">
-                          Cadence Step: Day {task.cadence_step}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Task Title & Details */}
-                    <div className="flex items-center gap-2">
-                      <h3 className={`text-xs font-bold text-slate-900 group-hover:text-blue-600 transition-colors ${
-                        isCompleted ? 'line-through text-slate-500' : ''
-                      }`}>
-                        {task.title}
-                      </h3>
-                    </div>
-
-                    {/* Lead Metadata (Student, Phone, Location, Degree) */}
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                      <span className="font-semibold text-slate-800">{lead.full_name}</span>
-                      <span>·</span>
-                      <span className="font-mono text-slate-600">{lead.phone_e164 || lead.phone_raw}</span>
-                      <span>·</span>
-                      <span className="flex items-center gap-0.5">
-                        <MapPin className="w-3 h-3 text-slate-400" />
-                        {lead.city}
-                      </span>
-                      <span>·</span>
-                      <span className="text-slate-700">{lead.target_degree} ({lead.target_intake})</span>
-                    </div>
-                  </div>
-
-                  {/* Right: Actions, Priority Modifier & 1-Click Complete */}
-                  <div
-                    className="flex flex-wrap items-center gap-2 shrink-0 pt-2 md:pt-0"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {/* Inline Priority Modifier */}
-                    {!isCompleted && (
-                      <select
-                        value={task.priority || 'medium'}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          updateTaskPriority(task.id, e.target.value as TaskPriority);
-                        }}
-                        className="text-[11px] font-semibold bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 hover:border-slate-300 focus:outline-hidden cursor-pointer"
-                        title="Change task priority"
-                      >
-                        <option value="high">High Priority</option>
-                        <option value="medium">Medium Priority</option>
-                        <option value="low">Low Priority</option>
-                      </select>
-                    )}
-
-                    <a
-                      href={`tel:${lead.phone_e164}`}
-                      title={`Call ${lead.full_name}`}
-                      className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded text-xs font-medium flex items-center gap-1 transition-colors"
-                    >
-                      <Phone className="w-3.5 h-3.5" />
-                      <span>Call</span>
-                    </a>
-
-                    <button
-                      type="button"
-                      onClick={() => onOpenWhatsAppScript(lead)}
-                      title="Open WhatsApp Template"
-                      className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-medium flex items-center gap-1 transition-colors"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" />
-                      <span>WhatsApp</span>
-                    </button>
-
-                    {/* PRIMARY ACTION: Mark as Completed */}
-                    {isCompleted ? (
-                      <button
-                        type="button"
-                        onClick={() => handleUndoComplete(task.id)}
-                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium flex items-center gap-1.5 transition-colors border border-slate-200"
-                        title="Reopen task"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
-                        <span>Reopen</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={(e) => handleMarkTaskComplete(task.id, e)}
-                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
-                        title="Mark task as completed"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Mark Completed</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
+                  task={task}
+                  lead={lead}
+                  onSelectLead={onSelectLead}
+                  onOpenWhatsAppScript={onOpenWhatsAppScript}
+                  onComplete={(t) => handleMarkTaskComplete(t.id)}
+                  onReopen={handleUndoComplete}
+                />
               );
             })
           )}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Phone, MessageSquare, AlertTriangle, ChevronRight } from 'lucide-react';
+import { Phone, MessageSquare, AlertTriangle, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { Lead, LeadStage, LeadTemperature } from '../../../types';
 import { formatBdDateTime, formatRelativeDue, STAGE_CONFIG } from '../../../utils/crm-logic';
 import { ScoreWeightBadge, TemperaturePill, SlaBadge } from '../../common/badges';
@@ -25,6 +25,7 @@ interface LeadCardProps {
   onSelectLead: (lead: Lead) => void;
   onOpenWhatsAppScript: (lead: Lead) => void;
   onStageChange: (lead: Lead, stage: LeadStage) => void;
+  onQuickComplete: (task: NonNullable<LeadRowData['nextOpenTask']>) => void;
 }
 
 /** Compact card layout used below the sm breakpoint instead of the
@@ -36,6 +37,7 @@ const LeadCard: React.FC<LeadCardProps> = ({
   onSelectLead,
   onOpenWhatsAppScript,
   onStageChange,
+  onQuickComplete,
 }) => {
   const { lead } = data;
 
@@ -94,16 +96,31 @@ const LeadCard: React.FC<LeadCardProps> = ({
         <span className="font-mono text-[11px] text-slate-500">{lead.target_intake}</span>
       </div>
 
-      {/* Row 4: next action + SLA */}
+      {/* Row 4: next action + SLA + quick-complete */}
       <div className="flex items-center justify-between gap-2 text-xs">
-        <span
-          className={`font-mono ${
-            data.isOverdue ? 'text-rose-600 font-bold flex items-center gap-1' : 'text-slate-600'
-          }`}
-          title={formatBdDateTime(lead.next_action_at)}
-        >
-          {data.isOverdue && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
-          {formatRelativeDue(lead.next_action_at)}
+        <span className="flex items-center gap-1.5 min-w-0">
+          {data.nextOpenTask && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickComplete(data.nextOpenTask!);
+              }}
+              className="p-0.5 rounded text-emerald-600 hover:text-emerald-800 transition-colors shrink-0"
+              title={`Quick-complete next task: "${data.nextOpenTask.title}"`}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+            </button>
+          )}
+          <span
+            className={`font-mono truncate ${
+              data.isOverdue ? 'text-rose-600 font-bold flex items-center gap-1' : 'text-slate-600'
+            }`}
+            title={formatBdDateTime(lead.next_action_at)}
+          >
+            {data.isOverdue && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
+            {formatRelativeDue(lead.next_action_at)}
+          </span>
         </span>
         <SlaBadge sla={data.sla} />
       </div>

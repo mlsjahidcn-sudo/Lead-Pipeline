@@ -1,4 +1,4 @@
-import { Lead, LeadScoreWeightResult, SlaInfo } from '../../../types';
+import { Lead, LeadScoreWeightResult, SlaInfo, FollowUpTask } from '../../../types';
 
 /** Precomputed per-lead display data — built once per render pass in
  * InboxView (single memo) instead of recomputed inside every row. */
@@ -12,6 +12,8 @@ export interface LeadRowData {
   isDormant: boolean;
   daysDormant: number;
   weight: LeadScoreWeightResult;
+  /** Earliest-due open follow-up task, for quick-complete. */
+  nextOpenTask: FollowUpTask | null;
 }
 
 export type SortKey =

@@ -1,88 +1,26 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Bell, Check, Clock, AlertTriangle, X, Users, type LucideIcon } from 'lucide-react';
+import { Bell, Check, Clock, AlertTriangle, X, RotateCcw } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { useOverdueTasks } from '../hooks/useOverdueTasks';
-import { FollowUpTask } from '../types';
+import { TaskRow } from './common/TaskRow';
+import { FollowUpTask, Lead } from '../types';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onSelectLead?: (leadId: string) => void;
+  onOpenWhatsAppScript?: (lead: Lead) => void;
 }
 
-const formatRelative = (iso: string): string => {
-  const diff = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(diff / 60_000);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const d = Math.floor(hr / 24);
-  return `${d}d ago`;
-};
-
-const TaskRow: React.FC<{
-  task: FollowUpTask;
-  overdue: boolean;
-  onComplete: () => void;
-  onSelect: () => void;
-}> = ({ task, overdue, onComplete, onSelect }) => {
-  return (
-    <div
-      className={`p-3 rounded-lg border transition-colors ${
-        overdue ? 'border-rose-200 bg-rose-50/50' : 'border-slate-200 bg-white'
-      }`}
-    >
-      <div className="flex items-start gap-2">
-        <div className="mt-0.5 shrink-0">
-          {overdue ? (
-            <AlertTriangle className="w-4 h-4 text-rose-600" />
-          ) : (
-            <Clock className="w-4 h-4 text-amber-600" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-slate-900 line-clamp-2">{task.title}</div>
-          <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
-            <span>{task.task_type}</span>
-            <span>•</span>
-            <span>{overdue ? `Overdue ${formatRelative(task.due_at)}` : `Due ${new Date(task.due_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`}</span>
-            {task.priority && (
-              <>
-                <span>•</span>
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                  task.priority === 'high' ? 'bg-rose-100 text-rose-700' :
-                  task.priority === 'medium' ? 'bg-amber-100 text-amber-700' :
-                  'bg-slate-100 text-slate-600'
-                }`}>{task.priority}</span>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-1.5 mt-2">
-        <button
-          onClick={onComplete}
-          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 border border-emerald-200 rounded transition-colors"
-        >
-          <Check className="w-3 h-3" />
-          Complete
-        </button>
-        <button
-          onClick={onSelect}
-          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200 rounded transition-colors"
-        >
-          Open lead
-        </button>
-      </div>
-    </div>
-  );
-};
-
-export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead }) => {
-  const { tasks, completeTask, leads, currentEmployee, company } = useCrm();
+export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead, onOpenWhatsAppScript }) => {
+  const { tasks, completeTask, reopenTask, leads, currentEmployee, company } = useCrm();
   const [scope, setScope] = useState<'my' | 'all'>('my');
   const { overdue, upcoming } = useOverdueTasks(scope);
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
+
+  // Undo banner (parity with the Today queue): completing from the drawer
+  // can be reverted within 5 seconds.
+  const [lastCompleted, setLastCompleted] = useState<{ id: string; title: string } | null>(null);
 
   useEffect(() => {
     if (currentEmployee.role === 'admin' || currentEmployee.role === 'manager') {
@@ -102,6 +40,39 @@ export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead }) 
   }, [open, onClose]);
 
   const leadById = useMemo(() => new Map(leads.map((l) => [l.id, l])), [leads]);
+
+  const handleComplete = (t: FollowUpTask) => {
+    completeTask(t.id);
+    setLastCompleted({ id: t.id, title: t.title });
+    setTimeout(() => setLastCompleted((prev) => (prev?.id === t.id ? null : prev)), 5000);
+  };
+
+  const handleUndo = () => {
+    if (!lastCompleted) return;
+    reopenTask(lastCompleted.id);
+    setLastCompleted(null);
+  };
+
+  const renderRow = (t: FollowUpTask) => {
+    const lead = leadById.get(t.lead_id);
+    if (!lead) return null;
+    return (
+      <div key={t.id} className="mb-2 rounded-lg border border-slate-200 bg-white overflow-hidden shadow-2xs">
+        <TaskRow
+          task={t}
+          lead={lead}
+          variant="compact"
+          onSelectLead={(l) => {
+            onSelectLead?.(l.id);
+            onClose();
+          }}
+          onOpenWhatsAppScript={(l) => onOpenWhatsAppScript?.(l)}
+          onComplete={handleComplete}
+          onReopen={reopenTask}
+        />
+      </div>
+    );
+  };
 
   return (
     <>
@@ -159,6 +130,22 @@ export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead }) 
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {/* Undo banner */}
+          {lastCompleted && (
+            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+              <span className="truncate font-medium">
+                Completed “{lastCompleted.title}”
+              </span>
+              <button
+                onClick={handleUndo}
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded border border-emerald-300 hover:bg-emerald-100 font-semibold transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Undo
+              </button>
+            </div>
+          )}
+
           {overdue.length === 0 && upcoming.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <Check className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
@@ -173,19 +160,7 @@ export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead }) 
                     <AlertTriangle className="w-3 h-3" />
                     Overdue ({overdue.length})
                   </div>
-                  {overdue.map((t) => (
-                    <div key={t.id} className="mb-2">
-                      <TaskRow
-                        task={t}
-                        overdue
-                        onComplete={() => completeTask(t.id)}
-                        onSelect={() => {
-                          onSelectLead?.(t.lead_id);
-                          onClose();
-                        }}
-                      />
-                    </div>
-                  ))}
+                  {overdue.map(renderRow)}
                 </section>
               )}
               {upcoming.length > 0 && (
@@ -194,19 +169,7 @@ export const OverdueDrawer: React.FC<Props> = ({ open, onClose, onSelectLead }) 
                     <Clock className="w-3 h-3" />
                     Upcoming ({upcoming.length})
                   </div>
-                  {upcoming.map((t) => (
-                    <div key={t.id} className="mb-2">
-                      <TaskRow
-                        task={t}
-                        overdue={false}
-                        onComplete={() => completeTask(t.id)}
-                        onSelect={() => {
-                          onSelectLead?.(t.lead_id);
-                          onClose();
-                        }}
-                      />
-                    </div>
-                  ))}
+                  {upcoming.map(renderRow)}
                 </section>
               )}
             </>

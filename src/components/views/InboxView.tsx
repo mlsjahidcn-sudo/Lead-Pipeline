@@ -51,11 +51,14 @@ export const InboxView: React.FC<InboxViewProps> = ({
 }) => {
   const {
     leads,
+    tasks,
     employees,
     sources,
     lostReasons,
     updateLead,
     reassignLead,
+    completeTask,
+    reopenTask,
     currentEmployee,
     getLeadScoreWeight,
     getLeadActivities,
@@ -78,6 +81,9 @@ export const InboxView: React.FC<InboxViewProps> = ({
   const [lostTarget, setLostTarget] = useState<Lead | null>(null);
   const [lostReasonId, setLostReasonId] = useState<number>(1);
   const [lostNote, setLostNote] = useState('');
+
+  // Quick-complete undo (completing the next open task from a row).
+  const [lastCompletedTask, setLastCompletedTask] = useState<{ id: string; title: string } | null>(null);
 
   const patchFilters = useCallback((patch: Partial<InboxFilters>) => {
     setFilters((prev) => ({ ...prev, ...patch }));
@@ -131,6 +137,19 @@ export const InboxView: React.FC<InboxViewProps> = ({
     for (const lead of leads) map.set(lead.id, getLeadScoreWeight(lead));
     return map;
   }, [leads, getLeadScoreWeight]);
+
+  // Earliest-due open task per lead, one pass — powers quick-complete.
+  const nextOpenTaskByLeadId = useMemo(() => {
+    const map = new Map<string, LeadRowData['nextOpenTask']>();
+    for (const t of tasks) {
+      if (t.status !== 'open') continue;
+      const existing = map.get(t.lead_id);
+      if (!existing || new Date(t.due_at).getTime() < new Date(existing.due_at).getTime()) {
+        map.set(t.lead_id, t);
+      }
+    }
+    return map;
+  }, [tasks]);
 
   // ---------------------------------------------------------------------
   // Filter
@@ -249,9 +268,10 @@ export const InboxView: React.FC<InboxViewProps> = ({
               totalFieldsCount: 0,
               breakdown: [],
             },
+          nextOpenTask: nextOpenTaskByLeadId.get(lead.id) ?? null,
         };
       }),
-    [sortedLeads, visibleCount, employeeById, sourceById, dormantInfoByLeadId, weightByLeadId]
+    [sortedLeads, visibleCount, employeeById, sourceById, dormantInfoByLeadId, weightByLeadId, nextOpenTaskByLeadId]
   );
 
   // Metrics summary + tab counts — single pass over leads
@@ -342,6 +362,22 @@ export const InboxView: React.FC<InboxViewProps> = ({
   }, [visibleRows]);
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const handleQuickComplete = useCallback(
+    (task: LeadRowData['nextOpenTask']) => {
+      if (!task) return;
+      completeTask(task.id);
+      setLastCompletedTask({ id: task.id, title: task.title });
+      setTimeout(() => setLastCompletedTask((prev) => (prev?.id === task.id ? null : prev)), 5000);
+    },
+    [completeTask]
+  );
+
+  const handleUndoQuickComplete = useCallback(() => {
+    if (!lastCompletedTask) return;
+    reopenTask(lastCompletedTask.id);
+    setLastCompletedTask(null);
+  }, [lastCompletedTask, reopenTask]);
 
   const selectedLeads = useMemo(
     () => leads.filter((l) => selectedIds.has(l.id)),
@@ -458,6 +494,22 @@ export const InboxView: React.FC<InboxViewProps> = ({
         onExportSelected={handleExportSelected}
       />
 
+      {/* Quick-complete undo banner */}
+      {lastCompletedTask && (
+        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+          <span className="truncate font-medium">
+            Completed “{lastCompletedTask.title}”
+          </span>
+          <button
+            type="button"
+            onClick={handleUndoQuickComplete}
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded border border-emerald-300 hover:bg-emerald-100 font-semibold transition-colors"
+          >
+            Undo
+          </button>
+        </div>
+      )}
+
       {/* Desktop: sortable sticky-header table */}
       <LeadTable
         rows={visibleRows}
@@ -474,6 +526,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
         onSelectLead={onSelectLead}
         onOpenWhatsAppScript={onOpenWhatsAppScript}
         onStageChange={handleStageChange}
+        onQuickComplete={handleQuickComplete}
         onOpenNewLead={onOpenNewLead}
       />
 
@@ -499,6 +552,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
               onSelectLead={onSelectLead}
               onOpenWhatsAppScript={onOpenWhatsAppScript}
               onStageChange={handleStageChange}
+              onQuickComplete={handleQuickComplete}
             />
           ))
         )}

@@ -108,9 +108,19 @@ interface CrmContextType {
     nextActionNote?: string;
     taskIdToComplete?: string;
   }) => void;
-  completeTask: (taskId: string, outcomeNote?: string) => void;
+  completeTask: (
+    taskId: string,
+    opts?: {
+      outcomeNote?: string;
+      nextActionAt?: string;
+      nextActionNote?: string;
+      outcome?: ActivityOutcome;
+    }
+  ) => void;
   reopenTask: (taskId: string) => void;
   updateTaskPriority: (taskId: string, priority: TaskPriority) => void;
+  /** Push a task's due date forward (snooze). */
+  snoozeTask: (taskId: string, dueAt: string) => void;
   addQuickNote: (leadId: string, noteText: string) => void;
   scheduleFollowUpTask: (data: {
     leadId: string;
@@ -1106,11 +1116,24 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const completeTask = useCallback(
-    (taskId: string, outcomeNote?: string) => {
+    (
+      taskId: string,
+      opts?: {
+        outcomeNote?: string;
+        /** ISO timestamp — defaults to +48h when omitted (legacy behavior). */
+        nextActionAt?: string;
+        nextActionNote?: string;
+        /** Overrides the hardcoded 'connected' outcome on the logged activity. */
+        outcome?: ActivityOutcome;
+      }
+    ) => {
       const target = tasks.find((t) => t.id === taskId);
       if (!target) return;
       const nowIso = new Date().toISOString();
       const actId = genId();
+      const nextAt = opts?.nextActionAt ?? new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+      const nextNote = opts?.nextActionNote || 'Routine cadence follow-up';
+      const outcome = opts?.outcome ?? 'connected';
       setActivities((prev) => [
         {
           id: actId,
@@ -1118,10 +1141,10 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           employee_id: effectiveEmployee.id,
           activity_type: (target.task_type as ActivityType) || 'call',
           direction: 'outbound',
-          outcome: 'connected',
-          summary: outcomeNote ? `Completed follow-up task "${target.title}": ${outcomeNote}` : `Completed follow-up task: "${target.title}"`,
-          next_action_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-          next_action_note: 'Routine cadence follow-up',
+          outcome,
+          summary: opts?.outcomeNote ? `Completed follow-up task "${target.title}": ${opts.outcomeNote}` : `Completed follow-up task: "${target.title}"`,
+          next_action_at: nextAt,
+          next_action_note: nextNote,
           occurred_at: nowIso,
           created_at: nowIso,
         },
@@ -1130,11 +1153,18 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       markDirty('lead_activities', actId);
       setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: 'done', completed_at: nowIso, activity_id: actId } : t)));
       markDirty('follow_up_tasks', taskId);
-      const nextIso = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-      setLeads((prev) => prev.map((l) => (l.id === target.lead_id ? { ...l, next_action_at: nextIso, next_action_note: 'Routine cadence follow-up', updated_at: nowIso } : l)));
+      setLeads((prev) => prev.map((l) => (l.id === target.lead_id ? { ...l, next_action_at: nextAt, next_action_note: nextNote, updated_at: nowIso } : l)));
       markDirty('leads', target.lead_id);
     },
     [tasks, currentEmployee, markDirty]
+  );
+
+  const snoozeTask = useCallback(
+    (taskId: string, dueAt: string) => {
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, due_at: dueAt } : t)));
+      markDirty('follow_up_tasks', taskId);
+    },
+    [markDirty]
   );
 
   const reopenTask = useCallback(
@@ -1786,6 +1816,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     completeTask,
     reopenTask,
     updateTaskPriority,
+    snoozeTask,
     addQuickNote,
     scheduleFollowUpTask,
     batchScheduleFollowUpTasks,
@@ -1809,7 +1840,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     currentEmployee, setCurrentEmployee, employees, sources, lostReasons,
     leads, activities, tasks, visits, payments, stageHistory,
     company, companyPresets, updateCompany, switchCompanyPreset, createCompanyProfile, formatCurrency,
-    createLead, updateLead, logInteraction, completeTask, reopenTask, updateTaskPriority, addQuickNote,
+    createLead, updateLead, logInteraction, completeTask, reopenTask, updateTaskPriority, snoozeTask, addQuickNote,
     scheduleFollowUpTask, batchScheduleFollowUpTasks, bookOfficeVisit, updateVisitStatus,
     recordPayment, verifyPayment, reassignLead, toggleCounsellorAcceptingLeads, mergeLeads,
     quickReplies, saveQuickReply,

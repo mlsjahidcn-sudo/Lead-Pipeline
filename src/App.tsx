@@ -189,6 +189,7 @@ const CrmApp: React.FC = () => {
       <OverdueDrawer
         open={isOverdueOpen}
         onClose={() => setIsOverdueOpen(false)}
+        onOpenWhatsAppScript={handleOpenWhatsApp}
         onSelectLead={(id) => {
           setSelectedLeadId(id);
           setIsDetailOpen(true);
