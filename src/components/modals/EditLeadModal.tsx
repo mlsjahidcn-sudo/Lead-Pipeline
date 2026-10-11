@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { normalizeBdPhone, calculateLeadScore } from '../../utils/crm-logic';
+import { POPULAR_TAG_SUGGESTIONS } from '../../utils/tags';
 import { X, Pencil, AlertTriangle, CheckCircle2, Sparkles, Tag, Plus } from 'lucide-react';
 import { Lead } from '../../types';
 
@@ -457,6 +458,32 @@ export const EditLeadModal: React.FC<EditLeadModalProps> = ({ lead, isOpen, onCl
                 ))}
               </div>
             )}
+
+            {/* Popular Suggestions */}
+            <div className="pt-1.5 border-t border-slate-200/60">
+              <div className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider mb-1.5">
+                Suggested Tags (Click to toggle):
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {POPULAR_TAG_SUGGESTIONS.map((sug) => {
+                  const isSelected = tags.includes(sug);
+                  return (
+                    <button
+                      type="button"
+                      key={sug}
+                      onClick={() => (isSelected ? handleRemoveTag(sug) : handleAddTag(sug))}
+                      className={`text-[11px] px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-2xs font-semibold'
+                          : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50/50'
+                      }`}
+                    >
+                      {isSelected ? `✓ ${sug}` : `+ ${sug}`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Next Action */}

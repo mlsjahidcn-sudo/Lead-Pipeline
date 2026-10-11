@@ -7,6 +7,7 @@ import {
   formatRelativeDue,
 } from '../../../utils/crm-logic';
 import { ScoreWeightBadge, TemperaturePill, SlaBadge } from '../../common/badges';
+import { getDisplayTags } from '../../../utils/tags';
 import { LeadRowData, Density, STAGE_SELECT_OPTIONS } from './types';
 
 /** Initials for the row avatar, e.g. "Mahir Faisal" -> "MF". */
@@ -45,7 +46,7 @@ const LeadTableRowInner: React.FC<LeadTableRowProps> = ({
   const { lead } = data;
   const compact = density === 'compact';
   const py = compact ? 'py-1.5' : 'py-3';
-  const tags = Array.isArray(lead.tags) ? lead.tags : [];
+  const tags = getDisplayTags(lead.tags);
 
   return (
     <tr

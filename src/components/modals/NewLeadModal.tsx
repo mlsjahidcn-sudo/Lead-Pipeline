@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { normalizeBdPhone, calculateLeadScore, checkDuplicateLead } from '../../utils/crm-logic';
+import { POPULAR_TAG_SUGGESTIONS } from '../../utils/tags';
 import { X, AlertTriangle, CheckCircle2, UserPlus, Sparkles, Tag, Plus } from 'lucide-react';
 import { Lead } from '../../types';
 
@@ -9,20 +10,6 @@ interface NewLeadModalProps {
   onClose: () => void;
   onSelectLead?: (lead: Lead) => void;
 }
-
-const POPULAR_TAG_SUGGESTIONS = [
-  'MBBS',
-  'Engineering',
-  'CSC Scholarship',
-  'High Value',
-  'Self-Funded',
-  'Parent VIP',
-  'March Intake',
-  'September Intake',
-  'IELTS 6.5+',
-  'Walk-in',
-  'Webinar Lead',
-];
 
 export const NewLeadModal: React.FC<NewLeadModalProps> = ({ isOpen, onClose, onSelectLead }) => {
   const { createLead, sources, employees, leads, currentEmployee } = useCrm();
