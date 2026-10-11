@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead } from '../../types';
 import { calculateSlaInfo, formatBdDateTime, isNextActionOverdue } from '../../utils/crm-logic';
+import { computeSourceStats, computeCounsellorStats } from '../../utils/analytics';
 import {
   Users,
   AlertTriangle,
@@ -28,6 +29,7 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
     employees,
     tasks,
     visits,
+    payments,
     sources,
     toggleCounsellorAcceptingLeads,
     reassignLead,
@@ -41,11 +43,15 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
   const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
 
   // 1. SLA Breaches: Uncontacted leads where 2h SLA elapsed
-  const slaBreaches = leads.filter((lead) => {
-    if (lead.stage !== 'new' || lead.first_contact_at || lead.duplicate_of) return false;
-    const sla = calculateSlaInfo(lead.created_at, lead.first_contact_at);
-    return sla.status === 'breached';
-  });
+  const slaBreaches = useMemo(
+    () =>
+      leads.filter((lead) => {
+        if (lead.stage !== 'new' || lead.first_contact_at || lead.duplicate_of) return false;
+        const sla = calculateSlaInfo(lead.created_at, lead.first_contact_at);
+        return sla.status === 'breached';
+      }),
+    [leads]
+  );
 
   // 2. Visits Today & Tomorrow
   const now = new Date();
@@ -53,48 +59,56 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const tomorrowStr = tomorrow.toISOString().slice(0, 10);
 
-  const upcomingVisits = visits.filter(
-    (v) => v.scheduled_at.startsWith(todayStr) || v.scheduled_at.startsWith(tomorrowStr)
+  const upcomingVisits = useMemo(
+    () =>
+      visits.filter(
+        (v) => v.scheduled_at.startsWith(todayStr) || v.scheduled_at.startsWith(tomorrowStr)
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visits, todayStr, tomorrowStr]
   );
 
-  // 3. Counsellor Performance & Capacity Matrix
+  // 3. Counsellor Performance & Capacity Matrix (shared single-pass analytics)
+  const counsellorStatsAll = useMemo(
+    () => computeCounsellorStats(leads, employees, payments, visits, tasks),
+    [leads, employees, payments, visits, tasks]
+  );
+  const overdueCountByEmployee = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of tasks) {
+      if (t.status !== 'open' || new Date(t.due_at).getTime() >= now.getTime()) continue;
+      map.set(t.assigned_to, (map.get(t.assigned_to) || 0) + 1);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks]);
+
   const counsellorMatrix = employees
     .filter((e) => e.role === 'counsellor')
     .map((c) => {
-      const assignedLeads = leads.filter((l) => l.owner_id === c.id && !l.duplicate_of);
-      const openLeads = assignedLeads.filter((l) => !['lost', 'enrolled', 'paid'].includes(l.stage));
-      const counsellorTasks = tasks.filter((t) => t.assigned_to === c.id);
-      const overdueTasks = counsellorTasks.filter(
-        (t) => t.status === 'open' && new Date(t.due_at).getTime() < now.getTime()
-      );
-      const visitsDone = visits.filter((v) => v.counsellor_id === c.id && v.status === 'attended');
-      const paidStudents = assignedLeads.filter((l) => l.stage === 'paid');
-
+      const stats = counsellorStatsAll.find((s) => s.employeeId === c.id);
       return {
         counsellor: c,
-        totalLeads: assignedLeads.length,
-        openLeads: openLeads.length,
-        overdueTasksCount: overdueTasks.length,
-        visitsAttended: visitsDone.length,
-        paidCount: paidStudents.length,
+        totalLeads: stats?.leads ?? 0,
+        openLeads: stats?.openLeads ?? 0,
+        overdueTasksCount: overdueCountByEmployee.get(c.id) ?? 0,
+        visitsAttended: stats?.visitsAttended ?? 0,
+        paidCount: stats?.paid ?? 0,
       };
     });
 
-  // 4. Source Breakdown
-  const sourceStats = sources.map((s) => {
-    const matching = leads.filter((l) => l.source_id === s.id && !l.duplicate_of);
-    const visitsCount = matching.filter(
-      (l) => l.stage === 'office_visit_booked' || l.stage === 'office_visit_done' || l.stage === 'paid'
-    ).length;
-    const paidCount = matching.filter((l) => l.stage === 'paid').length;
-    return {
-      source: s,
-      leadsCount: matching.length,
-      visitsCount,
-      paidCount,
-      conversionRate: matching.length > 0 ? ((paidCount / matching.length) * 100).toFixed(1) : '0',
-    };
-  });
+  // 4. Source Breakdown (shared single-pass analytics)
+  const sourceStatsRaw = useMemo(
+    () => computeSourceStats(leads, sources, payments),
+    [leads, sources, payments]
+  );
+  const sourceStats = sourceStatsRaw.map((s) => ({
+    source: { id: s.sourceId || '', name: s.name, channel: s.channel } as (typeof sources)[number],
+    leadsCount: s.leads,
+    visitsCount: s.visits,
+    paidCount: s.paid,
+    conversionRate: s.leads > 0 ? ((s.paid / s.leads) * 100).toFixed(1) : '0',
+  }));
 
   const handleConfirmReassign = () => {
     if (!reassignModalLead || !selectedTargetOwner) return;

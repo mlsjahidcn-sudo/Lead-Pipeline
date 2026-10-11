@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { TaskPriorityDashboard } from '../reports/TaskPriorityDashboard';
 import { Lead } from '../../types';
@@ -7,6 +7,8 @@ import {
   isNextActionOverdue,
   formatBdDateTime,
 } from '../../utils/crm-logic';
+import { computeFunnel, computeSourceStats, computeRevenueSummary } from '../../utils/analytics';
+import { exportLeadsFullCsv } from '../../utils/csv';
 import {
   BarChart3,
   FileText,
@@ -38,62 +40,52 @@ export const ReportsView: React.FC = () => {
   const [exportScope, setExportScope] = useState<'all' | 'open' | 'hot' | 'paid' | 'overdue'>('all');
 
   // Filter out internal archived duplicates
-  const allPipelineLeads = leads.filter((l) => !l.duplicate_of);
+  const allPipelineLeads = useMemo(() => leads.filter((l) => !l.duplicate_of), [leads]);
+
+  // Shared single-pass analytics (utils/analytics.ts) — memoized, replaces
+  // the former per-render inline aggregations.
+  const funnel = useMemo(() => computeFunnel(leads), [leads]);
+  const sourceStats = useMemo(() => computeSourceStats(leads, sources, payments), [leads, sources, payments]);
+  const revenueSummary = useMemo(() => computeRevenueSummary(payments), [payments]);
 
   // Daily report metrics
   const now = new Date();
-  const leadsYesterday = allPipelineLeads.filter((l) => {
-    const diff = (now.getTime() - new Date(l.created_at).getTime()) / (1000 * 60 * 60);
-    return diff <= 24;
-  });
+  const leadsYesterday = useMemo(() => {
+    return allPipelineLeads.filter((l) => {
+      const diff = (now.getTime() - new Date(l.created_at).getTime()) / (1000 * 60 * 60);
+      return diff <= 24;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allPipelineLeads]);
 
-  const totalPaid = payments.reduce((acc, p) => acc + p.amount, 0);
+  const totalPaid = revenueSummary.totalCollected;
 
   // Real-time Executive KPI Summary Metrics for Managers
-  const totalActiveLeads = allPipelineLeads.filter((l) => !['lost', 'enrolled'].includes(l.stage)).length;
-  const hotActiveLeads = allPipelineLeads.filter((l) => !['lost', 'enrolled'].includes(l.stage) && l.temperature === 'hot').length;
-  const newActiveLeads = allPipelineLeads.filter((l) => l.stage === 'new').length;
+  const totalActiveLeads = funnel.activeLeads;
+  const hotActiveLeads = funnel.hotActiveLeads;
+  const newActiveLeads = funnel.newLeads;
 
-  const convertedLeadsCount = allPipelineLeads.filter((l) => l.stage === 'paid' || l.stage === 'enrolled').length;
-  const conversionRate = allPipelineLeads.length > 0
-    ? ((convertedLeadsCount / allPipelineLeads.length) * 100).toFixed(1)
+  const convertedLeadsCount = funnel.converted;
+  const conversionRate = funnel.total > 0
+    ? ((funnel.converted / funnel.total) * 100).toFixed(1)
     : '0.0';
 
   const totalPaymentCollected = totalPaid;
-  const verifiedPaymentsCount = payments.length;
+  const verifiedPaymentsCount = revenueSummary.verifiedCount;
 
-  const attendedVisitsCount = visits.filter((v) => v.status === 'attended').length;
-  const scheduledVisitsCount = visits.filter((v) => v.status === 'booked' || v.status === 'confirmed').length;
+  const attendedVisitsCount = useMemo(() => visits.filter((v) => v.status === 'attended').length, [visits]);
+  const scheduledVisitsCount = useMemo(
+    () => visits.filter((v) => v.status === 'booked' || v.status === 'confirmed').length,
+    [visits]
+  );
 
   // Funnel Stage Counts
   const funnelStages = [
-    { stage: 'new', label: '1. Inbound Leads', count: allPipelineLeads.length },
-    {
-      stage: 'contacted',
-      label: '2. Contacted (First Outreach)',
-      count: allPipelineLeads.filter((l) => l.first_contact_at !== null).length,
-    },
-    {
-      stage: 'consultation',
-      label: '3. Consultations Scheduled',
-      count: allPipelineLeads.filter((l) =>
-        ['consultation_booked', 'consultation_done', 'office_visit_booked', 'office_visit_done', 'paid'].includes(
-          l.stage
-        )
-      ).length,
-    },
-    {
-      stage: 'visit',
-      label: '4. Office Visits Booked/Done',
-      count: allPipelineLeads.filter((l) =>
-        ['office_visit_booked', 'office_visit_done', 'paid', 'enrolled'].includes(l.stage)
-      ).length,
-    },
-    {
-      stage: 'paid',
-      label: '5. Paid / Enrolled Students',
-      count: allPipelineLeads.filter((l) => l.stage === 'paid' || l.stage === 'enrolled').length,
-    },
+    { stage: 'new', label: '1. Inbound Leads', count: funnel.total },
+    { stage: 'contacted', label: '2. Contacted (First Outreach)', count: funnel.contacted },
+    { stage: 'consultation', label: '3. Consultations Scheduled', count: funnel.consultations },
+    { stage: 'visit', label: '4. Office Visits Booked/Done', count: funnel.visits },
+    { stage: 'paid', label: '5. Paid / Enrolled Students', count: funnel.converted },
   ];
 
   // Filter leads based on selected export scope
@@ -115,108 +107,14 @@ export const ReportsView: React.FC = () => {
 
   const scopedLeads = getScopedLeads();
 
-  // CSV Generator function
+  // CSV export via the shared util (same 33-field shape for every view)
   const handleExportCsv = (leadsToExport: Lead[], label: string) => {
-    const headers = [
-      'Lead ID',
-      'Student Name',
-      'Phone (E.164)',
-      'Phone (Raw)',
-      'WhatsApp (E.164)',
-      'Email',
-      'City',
-      'Country',
-      'Pipeline Stage Code',
-      'Pipeline Status Label',
-      'Temperature',
-      'Score (0-100)',
-      'Target Degree',
-      'Target Programme',
-      'Target Intake',
-      'Education Level',
-      'Last Academic Result GPA',
-      'English Proficiency',
-      'Funding Confirmed',
-      'Parent/Guardian Involved',
-      'Has Valid Passport',
-      'Lead Source Name',
-      'Source Channel',
-      'Assigned Counsellor',
-      'Counsellor Email',
-      'First Contact Date',
-      'Next Action Due Date',
-      'Next Action Note',
-      'Next Action Overdue',
-      'Lost Exit Reason',
-      'Lost Note',
-      'Created Date',
-      'Last Updated Date',
-    ];
-
-    const escapeCsv = (val: unknown): string => {
-      if (val === null || val === undefined) return '""';
-      const str = String(val).replace(/"/g, '""');
-      return `"${str}"`;
-    };
-
-    const rows = leadsToExport.map((l) => {
-      const owner = employees.find((e) => e.id === l.owner_id);
-      const source = sources.find((s) => s.id === l.source_id);
-      const stageLabel = getStageLabel(l.stage);
-      const isOverdue = isNextActionOverdue(l);
-
-      return [
-        escapeCsv(l.id),
-        escapeCsv(l.full_name),
-        escapeCsv(l.phone_e164),
-        escapeCsv(l.phone_raw),
-        escapeCsv(l.whatsapp_e164),
-        escapeCsv(l.email || ''),
-        escapeCsv(l.city),
-        escapeCsv(l.country || 'Bangladesh'),
-        escapeCsv(l.stage),
-        escapeCsv(stageLabel),
-        escapeCsv(l.temperature),
-        escapeCsv(l.score),
-        escapeCsv(l.target_degree),
-        escapeCsv(l.target_programme),
-        escapeCsv(l.target_intake),
-        escapeCsv(l.education_level),
-        escapeCsv(l.last_result),
-        escapeCsv(l.english_level),
-        escapeCsv(l.funding_confirmed ? 'Yes' : 'No'),
-        escapeCsv(l.parent_involved ? 'Yes' : 'No'),
-        escapeCsv(l.has_passport ? 'Yes' : 'No'),
-        escapeCsv(source?.name || 'Direct'),
-        escapeCsv(source?.channel || ''),
-        escapeCsv(owner?.full_name || 'Unassigned'),
-        escapeCsv(owner?.email || ''),
-        escapeCsv(l.first_contact_at || ''),
-        escapeCsv(l.next_action_at || ''),
-        escapeCsv(l.next_action_note || ''),
-        escapeCsv(isOverdue ? 'Yes' : 'No'),
-        escapeCsv(l.lost_reason_id || ''),
-        escapeCsv(l.lost_note || ''),
-        escapeCsv(l.created_at),
-        escapeCsv(l.updated_at),
-      ].join(',');
+    exportLeadsFullCsv(leadsToExport, {
+      employees,
+      sources,
+      companySlug: company.slug,
+      scopeLabel: label,
     });
-
-    const csvContent = [headers.join(','), ...rows].join('\r\n');
-    // Prepend UTF-8 BOM (\uFEFF) for compatibility with Excel and Bangla characters
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const dateStr = new Date().toISOString().slice(0, 10);
-    const scopeSlug = label.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const compSlug = (company.slug || 'crm').toLowerCase().replace(/[^a-z0-9]/g, '_');
-    link.href = url;
-    link.download = `${compSlug}_leads_${scopeSlug}_${dateStr}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-
     setHasRecentlyExported(true);
     setTimeout(() => setHasRecentlyExported(false), 2500);
   };
@@ -516,21 +414,18 @@ where l.temperature = 'hot'
               Lead Inflow by Source & Channel
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              {sources.map((s) => {
-                const count = allPipelineLeads.filter((l) => l.source_id === s.id).length;
-                return (
-                  <div
-                    key={s.id}
-                    className="p-3 bg-slate-50 border border-slate-100 rounded-md flex items-center justify-between"
-                  >
-                    <div>
-                      <span className="font-semibold text-slate-800">{s.name}</span>
-                      <div className="text-[11px] text-slate-400 font-mono">Channel: {s.channel}</div>
-                    </div>
-                    <span className="font-mono font-bold text-slate-900">{count} leads</span>
+              {sourceStats.map((s) => (
+                <div
+                  key={s.sourceId || 'direct'}
+                  className="p-3 bg-slate-50 border border-slate-100 rounded-md flex items-center justify-between"
+                >
+                  <div>
+                    <span className="font-semibold text-slate-800">{s.name}</span>
+                    <div className="text-[11px] text-slate-400 font-mono">Channel: {s.channel || 'direct'}</div>
                   </div>
-                );
-              })}
+                  <span className="font-mono font-bold text-slate-900">{s.leads} leads</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>

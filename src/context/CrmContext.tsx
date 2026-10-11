@@ -165,6 +165,8 @@ interface CrmContextType {
   calculateLeadWeight: (lead: Lead) => number;
   /** Per-lead activity slice from the memoized index — O(1) per call. */
   getLeadActivities: (leadId: string) => LeadActivity[];
+  /** Per-lead task slice from the memoized index — O(1) per call. */
+  getLeadTasks: (leadId: string) => FollowUpTask[];
 }
 
 const CrmContext = createContext<CrmContextType | undefined>(undefined);
@@ -1519,14 +1521,40 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const mergeLeads = useCallback(
     (survivingLeadId: string, duplicateLeadId: string) => {
       const nowIso = new Date().toISOString();
+      // Re-parent child rows and mark every mutated row dirty — the old
+      // version only updated local state, so the re-parenting never reached
+      // the server. Id lists are derived from the closure arrays (not inside
+      // the setState updaters, which run at render time and twice under
+      // StrictMode).
+      const reparentedActivities = activities.filter((a) => a.lead_id === duplicateLeadId).map((a) => a.id);
+      const reparentedTasks = tasks.filter((t) => t.lead_id === duplicateLeadId).map((t) => t.id);
+      const reparentedVisits = visits.filter((v) => v.lead_id === duplicateLeadId).map((v) => v.id);
+      const reparentedPayments = payments.filter((p) => p.lead_id === duplicateLeadId).map((p) => p.id);
+
       setActivities((prev) => prev.map((a) => (a.lead_id === duplicateLeadId ? { ...a, lead_id: survivingLeadId } : a)));
       setTasks((prev) => prev.map((t) => (t.lead_id === duplicateLeadId ? { ...t, lead_id: survivingLeadId } : t)));
       setVisits((prev) => prev.map((v) => (v.lead_id === duplicateLeadId ? { ...v, lead_id: survivingLeadId } : v)));
       setPayments((prev) => prev.map((p) => (p.lead_id === duplicateLeadId ? { ...p, lead_id: survivingLeadId } : p)));
+      reparentedActivities.forEach((id) => markDirty('lead_activities', id));
+      reparentedTasks.forEach((id) => markDirty('follow_up_tasks', id));
+      reparentedVisits.forEach((id) => markDirty('office_visits', id));
+      reparentedPayments.forEach((id) => markDirty('payments', id));
+
+      const mergedLostReasonId =
+        lostReasons.find((r) => r.code === 'other')?.id ??
+        lostReasons[lostReasons.length - 1]?.id;
       setLeads((prev) =>
         prev.map((l) =>
           l.id === duplicateLeadId
-            ? { ...l, duplicate_of: survivingLeadId, stage: 'lost' as LeadStage, lost_reason_id: 6, lost_note: `Merged into ${survivingLeadId}`, updated_at: nowIso }
+            ? {
+                ...l,
+                duplicate_of: survivingLeadId,
+                stage: 'lost' as LeadStage,
+                lost_reason_id: mergedLostReasonId,
+                lost_note: `Merged into ${survivingLeadId}`,
+                next_action_at: null,
+                updated_at: nowIso,
+              }
             : l
         )
       );
@@ -1546,7 +1574,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ]);
       markDirty('lead_activities', actId);
     },
-    [currentEmployee, markDirty]
+    [activities, tasks, visits, payments, lostReasons, currentEmployee, markDirty]
   );
 
   const bulkImportLeads = useCallback(
@@ -1697,6 +1725,24 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [activitiesByLeadId]
   );
 
+  // Same one-pass index for tasks (ManagerView, LeadDetailModal,
+  // TaskPriorityDashboard and useOverdueTasks all re-filter the global
+  // tasks array per render otherwise).
+  const tasksByLeadId = useMemo(() => {
+    const map = new Map<string, FollowUpTask[]>();
+    for (const t of tasks) {
+      const list = map.get(t.lead_id);
+      if (list) list.push(t);
+      else map.set(t.lead_id, [t]);
+    }
+    return map;
+  }, [tasks]);
+
+  const getLeadTasks = useCallback(
+    (leadId: string): FollowUpTask[] => tasksByLeadId.get(leadId) ?? [],
+    [tasksByLeadId]
+  );
+
   const getLeadScoreWeight = useCallback(
     (lead: Lead): LeadScoreWeightResult => calculateLeadScoreWeight(lead, activitiesByLeadId.get(lead.id) ?? [], sources),
     [activitiesByLeadId, sources]
@@ -1757,6 +1803,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     getLeadScoreWeight,
     calculateLeadWeight,
     getLeadActivities,
+    getLeadTasks,
   }), [
     loading, displayError, isAuthenticated, signOut, syncError, clearSyncError,
     currentEmployee, setCurrentEmployee, employees, sources, lostReasons,
@@ -1766,7 +1813,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleFollowUpTask, batchScheduleFollowUpTasks, bookOfficeVisit, updateVisitStatus,
     recordPayment, verifyPayment, reassignLead, toggleCounsellorAcceptingLeads, mergeLeads,
     quickReplies, saveQuickReply,
-    bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight, getLeadActivities,
+    bulkImportLeads, resetToDefaultData, getLeadScoreWeight, calculateLeadWeight, getLeadActivities, getLeadTasks,
   ]);
 
   // Render the gate instead of the children while the session is still

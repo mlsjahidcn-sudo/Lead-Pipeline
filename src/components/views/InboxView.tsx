@@ -53,6 +53,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
     leads,
     employees,
     sources,
+    lostReasons,
     updateLead,
     reassignLead,
     currentEmployee,
@@ -71,6 +72,12 @@ export const InboxView: React.FC<InboxViewProps> = ({
   );
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Lost-reason prompt for row/card quick stage changes (audit parity with
+  // the lead detail modal — 'lost' is never written without a reason).
+  const [lostTarget, setLostTarget] = useState<Lead | null>(null);
+  const [lostReasonId, setLostReasonId] = useState<number>(1);
+  const [lostNote, setLostNote] = useState('');
 
   const patchFilters = useCallback((patch: Partial<InboxFilters>) => {
     setFilters((prev) => ({ ...prev, ...patch }));
@@ -281,10 +288,33 @@ export const InboxView: React.FC<InboxViewProps> = ({
 
   const handleStageChange = useCallback(
     (lead: Lead, stage: LeadStage) => {
+      if (stage === 'lost') {
+        setLostReasonId(lostReasons[0]?.id ?? 1);
+        setLostNote('');
+        setLostTarget(lead);
+        return;
+      }
       updateLead(lead.id, { stage });
     },
-    [updateLead]
+    [updateLead, lostReasons]
   );
+
+  const handleConfirmLost = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lostTarget) return;
+    const reason = lostReasons.find((r) => r.id === lostReasonId);
+    updateLead(
+      lostTarget.id,
+      {
+        stage: 'lost',
+        lost_reason_id: lostReasonId,
+        lost_note: lostNote,
+        next_action_at: null,
+      },
+      `Marked Lost: ${reason?.label || 'Unknown reason'}${lostNote ? ` - "${lostNote}"` : ''}`
+    );
+    setLostTarget(null);
+  };
 
   const toggleSelect = useCallback((leadId: string) => {
     setSelectedIds((prev) => {
@@ -482,6 +512,68 @@ export const InboxView: React.FC<InboxViewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Modal: Lost reason prompt (row/card quick stage change) */}
+      {lostTarget && (
+        <div className="fixed inset-0 z-60 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg p-5 max-w-md w-full shadow-xl space-y-4 border border-slate-200">
+            <h3 className="text-sm font-bold text-slate-900">
+              Mark {lostTarget.full_name} as Lost
+            </h3>
+            <p className="text-xs text-slate-600">
+              Select the primary reason why this lead did not convert — this feeds the daily lost-lead audit.
+            </p>
+
+            <form onSubmit={handleConfirmLost} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Lost Reason *
+                </label>
+                <select
+                  value={lostReasonId}
+                  onChange={(e) => setLostReasonId(Number(e.target.value))}
+                  className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-md bg-white"
+                >
+                  {lostReasons.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Explanation Note
+                </label>
+                <textarea
+                  rows={2}
+                  value={lostNote}
+                  onChange={(e) => setLostNote(e.target.value)}
+                  placeholder="Specific student feedback..."
+                  className="w-full text-xs p-2 border border-slate-200 rounded-md"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setLostTarget(null)}
+                  className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-md"
+                >
+                  Confirm Lost
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

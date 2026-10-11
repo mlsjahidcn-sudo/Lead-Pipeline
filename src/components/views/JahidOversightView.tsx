@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 import { Lead } from '../../types';
 import { formatBdDateTime } from '../../utils/crm-logic';
+import { computeCounsellorStats } from '../../utils/analytics';
 import {
   ShieldAlert,
   Flame,
@@ -23,7 +24,7 @@ interface JahidOversightViewProps {
 export const JahidOversightView: React.FC<JahidOversightViewProps> = ({
   onSelectLead,
 }) => {
-  const { leads, employees, lostReasons, updateLead, payments, company } = useCrm();
+  const { leads, employees, lostReasons, updateLead, payments, visits, tasks, company } = useCrm();
 
   const [copiedReport, setCopiedReport] = useState(false);
   const now = new Date();
@@ -55,31 +56,28 @@ export const JahidOversightView: React.FC<JahidOversightViewProps> = ({
     return daysSinceUpdated >= 7;
   });
 
-  // 5. Counsellor League Table
-  const counsellorLeague = employees
-    .filter((e) => e.role === 'counsellor')
-    .map((c) => {
-      const myLeads = leads.filter((l) => l.owner_id === c.id && !l.duplicate_of);
-      const contacted = myLeads.filter((l) => l.first_contact_at !== null);
-      const visits = myLeads.filter((l) => ['office_visit_booked', 'office_visit_done', 'paid'].includes(l.stage));
-      const paid = myLeads.filter((l) => l.stage === 'paid');
-
-      const contactRate = myLeads.length > 0 ? Math.round((contacted.length / myLeads.length) * 100) : 0;
-      const visitRate = myLeads.length > 0 ? Math.round((visits.length / myLeads.length) * 100) : 0;
-      const totalRevenue = payments
-        .filter((p) => myLeads.some((l) => l.id === p.lead_id))
-        .reduce((sum, p) => sum + p.amount, 0);
-
-      return {
-        counsellor: c,
-        totalLeads: myLeads.length,
-        contactRate,
-        visitRate,
-        paidCount: paid.length,
-        totalRevenue,
-      };
-    })
-    .sort((a, b) => b.paidCount - a.paidCount || b.totalRevenue - a.totalRevenue);
+  // 5. Counsellor League Table (shared single-pass analytics — was O(n²)
+  // via myLeads.some() per payment)
+  const counsellorLeague = useMemo(() => {
+    const statsAll = computeCounsellorStats(leads, employees, payments, visits, tasks);
+    return employees
+      .filter((e) => e.role === 'counsellor')
+      .map((c) => {
+        const stats = statsAll.find((s) => s.employeeId === c.id);
+        return {
+          counsellor: c,
+          totalLeads: stats?.leads ?? 0,
+          contactRate: Math.round(stats?.contactRate ?? 0),
+          visitRate:
+            stats && stats.leads > 0
+              ? Math.round((stats.visitStageLeads / stats.leads) * 100)
+              : 0,
+          paidCount: stats?.paid ?? 0,
+          totalRevenue: stats?.revenue ?? 0,
+        };
+      })
+      .sort((a, b) => b.paidCount - a.paidCount || b.totalRevenue - a.totalRevenue);
+  }, [leads, employees, payments, visits, tasks]);
 
   // Daily Morning Report text generator (exact format from section 7)
   const generateDailyReportText = () => {
