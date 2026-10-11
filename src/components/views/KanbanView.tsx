@@ -8,6 +8,8 @@ import {
 } from '../../utils/crm-logic';
 import { getLeadLastContacted, calculateDaysDormant } from '../../utils/automated-scheduling';
 import { ScoreWeightBadge, TemperaturePill } from '../common/badges';
+import { SavedViewMenu } from '../common/SavedViewMenu';
+import { loadSavedViews, persistSavedView, deleteSavedView, SavedView } from '../../utils/saved-views';
 import {
   MapPin,
   Calendar,
@@ -44,6 +46,7 @@ const COLUMNS: ColumnDef[] = [
   { id: 'office_visit_booked', label: 'Office Visit Booked', description: 'Goal: Meet parents', highlight: true },
   { id: 'office_visit_done', label: 'Visit Completed', description: '24h decision follow-up' },
   { id: 'paid', label: 'Paid Student', description: 'Deposit / Package fee' },
+  { id: 'enrolled', label: 'Enrolled', description: 'Visa / Application submitted' },
   { id: 'lost', label: 'Lost / Closed', description: 'Documented exit reason' },
 ];
 
@@ -53,7 +56,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onOpenBookVisit,
   onOpenRecordPayment,
 }) => {
-  const { leads, employees, updateLead, getLeadScoreWeight, getLeadActivities, currentEmployee } = useCrm();
+  const { leads, employees, lostReasons, updateLead, getLeadScoreWeight, getLeadActivities, currentEmployee } = useCrm();
   const isManagerOrAdmin = currentEmployee.role === 'admin' || currentEmployee.role === 'manager';
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -61,6 +64,40 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   const [filterOwner, setFilterOwner] = useState<string>('all');
   const [filterTemp, setFilterTemp] = useState<string>('all');
   const [filterWeight, setFilterWeight] = useState<string>('all');
+
+  // Drag-and-drop state (native HTML5 DnD)
+  const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+
+  // Lost-reason prompt for drops/advances onto the lost column (audit rule)
+  const [lostTarget, setLostTarget] = useState<Lead | null>(null);
+  const [lostReasonId, setLostReasonId] = useState<number>(1);
+  const [lostNote, setLostNote] = useState('');
+
+  // Saved filter views (per device)
+  const [savedViews, setSavedViews] = useState<SavedView[]>(() => loadSavedViews('kanban'));
+  const handleSaveView = (name: string) => {
+    persistSavedView({
+      name,
+      surface: 'kanban',
+      payload: { searchQuery, filterStage, filterOwner, filterTemp, filterWeight },
+    });
+    setSavedViews(loadSavedViews('kanban'));
+  };
+  const handleApplyView = (view: SavedView) => {
+    const p = view.payload as Partial<{
+      searchQuery: string; filterStage: string; filterOwner: string; filterTemp: string; filterWeight: string;
+    }>;
+    setSearchQuery(p.searchQuery ?? '');
+    setFilterStage(p.filterStage ?? 'all');
+    setFilterOwner(p.filterOwner ?? 'all');
+    setFilterTemp(p.filterTemp ?? 'all');
+    setFilterWeight(p.filterWeight ?? 'all');
+  };
+  const handleDeleteView = (id: string) => {
+    deleteSavedView(id);
+    setSavedViews(loadSavedViews('kanban'));
+  };
 
   const handleAdvance = (e: React.MouseEvent, lead: Lead) => {
     e.stopPropagation();
@@ -72,20 +109,68 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       'office_visit_booked',
       'office_visit_done',
       'paid',
+      'enrolled',
     ];
 
     const currentIndex = stageOrder.indexOf(lead.stage);
     if (currentIndex >= 0 && currentIndex < stageOrder.length - 1) {
-      const nextStage = stageOrder[currentIndex + 1];
-      if (nextStage === 'office_visit_booked') {
-        onOpenBookVisit(lead);
-      } else if (nextStage === 'paid') {
-        onOpenRecordPayment(lead);
-      } else {
-        updateLead(lead.id, { stage: nextStage });
-      }
+      applyStageChange(lead, stageOrder[currentIndex + 1]);
     }
   };
+
+  // Stage change with the same gates as the detail modal: visit booking and
+  // payment open their dedicated flows, lost requires an exit reason.
+  const applyStageChange = (lead: Lead, nextStage: LeadStage) => {
+    if (nextStage === lead.stage) return;
+    if (nextStage === 'office_visit_booked') {
+      onOpenBookVisit(lead);
+    } else if (nextStage === 'paid') {
+      onOpenRecordPayment(lead);
+    } else if (nextStage === 'lost') {
+      setLostReasonId(lostReasons[0]?.id ?? 1);
+      setLostNote('');
+      setLostTarget(lead);
+    } else {
+      updateLead(lead.id, { stage: nextStage }, `Stage moved to ${nextStage.replace(/_/g, ' ')} on Kanban board`);
+    }
+  };
+
+  const handleConfirmLost = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lostTarget) return;
+    const reason = lostReasons.find((r) => r.id === lostReasonId);
+    updateLead(
+      lostTarget.id,
+      {
+        stage: 'lost',
+        lost_reason_id: lostReasonId,
+        lost_note: lostNote,
+        next_action_at: null,
+      },
+      `Marked Lost: ${reason?.label || 'Unknown reason'}${lostNote ? ` - "${lostNote}"` : ''}`
+    );
+    setLostTarget(null);
+  };
+
+  // Native HTML5 drag-and-drop: cards set the lead id, columns accept drops.
+  const handleDropOnColumn = (e: React.DragEvent, targetStage: LeadStage) => {
+    e.preventDefault();
+    setDragOverColumn(null);
+    setDraggingLeadId(null);
+    const leadId = e.dataTransfer.getData('text/plain');
+    if (!leadId) return;
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    applyStageChange(lead, targetStage);
+  };
+
+  // Score weight for every lead, computed once per data change (same pattern
+  // as InboxView) — replaces per-card-per-render getLeadScoreWeight calls.
+  const weightByLeadId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getLeadScoreWeight>>();
+    for (const lead of leads) map.set(lead.id, getLeadScoreWeight(lead));
+    return map;
+  }, [leads, getLeadScoreWeight]);
 
   // Lead match evaluation for global search & filters
   const matchLead = (lead: Lead): boolean => {
@@ -132,7 +217,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
 
     // Lead Score Weight filter (1-10)
     if (filterWeight !== 'all') {
-      const w = lead.score_weight || getLeadScoreWeight(lead).weight;
+      const w = lead.score_weight || weightByLeadId.get(lead.id)?.weight || 0;
       if (filterWeight === 'high' && w < 8) return false;
       if (filterWeight === 'medium' && (w < 5 || w > 7)) return false;
       if (filterWeight === 'low' && w > 4) return false;
@@ -146,11 +231,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   // Previously matchLead executed for every lead × 8 columns (plus the count
   // and the top-score metric) on every render, each call potentially scoring
   // the lead against the whole activities array.
-  const matchingLeads = useMemo(() => leads.filter(matchLead), [leads, searchQuery, filterStage, filterOwner, filterTemp, filterWeight, getLeadScoreWeight]);
+  const matchingLeads = useMemo(
+    () => leads.filter(matchLead),
+    [leads, searchQuery, filterStage, filterOwner, filterTemp, filterWeight, weightByLeadId] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const totalMatchingLeads = matchingLeads.length;
   const topScoreCount = useMemo(
-    () => leads.filter((l) => !l.duplicate_of && (l.score_weight || getLeadScoreWeight(l).weight) >= 8).length,
-    [leads, getLeadScoreWeight]
+    () => leads.filter((l) => !l.duplicate_of && (l.score_weight || weightByLeadId.get(l.id)?.weight || 0) >= 8).length,
+    [leads, weightByLeadId]
+  );
+  const hotLeadCount = useMemo(
+    () => leads.filter((l) => !l.duplicate_of && l.temperature === 'hot' && l.stage !== 'lost').length,
+    [leads]
   );
   const employeeById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
   const dormantInfoByLeadId = useMemo(() => {
@@ -161,6 +253,19 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     }
     return map;
   }, [leads, getLeadActivities]);
+  // Group matching leads per column in ONE pass (was 9 re-filters/render).
+  // consultation_done folds into the consultation column; nurture into lost.
+  const leadsByColumn = useMemo(() => {
+    const map = new Map<string, Lead[]>();
+    for (const col of COLUMNS) map.set(col.id, []);
+    for (const l of matchingLeads) {
+      if (l.stage === 'consultation_done') map.get('consultation_booked')!.push(l);
+      else if (l.stage === 'nurture') map.get('lost')!.push(l);
+      else if (map.has(l.stage)) map.get(l.stage)!.push(l);
+    }
+    return map;
+  }, [matchingLeads]);
+
   const isFilterActive =
     searchQuery.trim() !== '' ||
     filterStage !== 'all' ||
@@ -201,9 +306,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           </div>
           <div className="px-2.5 py-1 bg-rose-50 border border-rose-200 rounded-md">
             <span className="text-rose-700 font-sans mr-1.5">Hot Leads:</span>
-            <strong className="text-rose-800">
-              {leads.filter((l) => !l.duplicate_of && l.temperature === 'hot' && l.stage !== 'lost').length}
-            </strong>
+            <strong className="text-rose-800">{hotLeadCount}</strong>
           </div>
         </div>
       </div>
@@ -231,6 +334,14 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
               </button>
             )}
           </div>
+
+          {/* Saved filter views */}
+          <SavedViewMenu
+            views={savedViews}
+            onSave={handleSaveView}
+            onApply={handleApplyView}
+            onDelete={handleDeleteView}
+          />
 
           {/* Quick Filter Selectors */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -335,15 +446,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
       {/* Columns Container */}
       <div className="flex gap-4 overflow-x-auto pb-6 pt-1">
         {COLUMNS.map((col) => {
-          const colLeads = matchingLeads.filter((l) => {
-            if (col.id === 'consultation_booked') {
-              return l.stage === 'consultation_booked' || l.stage === 'consultation_done';
-            }
-            if (col.id === 'lost') {
-              return l.stage === 'lost' || l.stage === 'nurture';
-            }
-            return l.stage === col.id;
-          });
+          const colLeads = leadsByColumn.get(col.id) ?? [];
 
           // Check if this column is explicitly selected or matches the stage filter
           const isColumnMatched =
@@ -352,11 +455,25 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
             (filterStage === 'lost' && col.id === 'lost') ||
             col.id === filterStage;
 
+          const isDropTarget = dragOverColumn === col.id && draggingLeadId !== null;
+
           return (
             <div
               key={col.id}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverColumn !== col.id) setDragOverColumn(col.id);
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                if (dragOverColumn === col.id) setDragOverColumn(null);
+              }}
+              onDrop={(e) => handleDropOnColumn(e, col.id)}
               className={`w-72 shrink-0 flex flex-col rounded-xl border transition-all ${
-                !isColumnMatched && filterStage !== 'all'
+                isDropTarget
+                  ? 'border-blue-400 bg-blue-50 ring-2 ring-blue-300 scale-[1.01]'
+                  : !isColumnMatched && filterStage !== 'all'
                   ? 'opacity-60 bg-slate-50 border-slate-200'
                   : col.highlight
                   ? 'bg-blue-50/40 border-blue-200 shadow-xs ring-1 ring-blue-300'
@@ -390,7 +507,9 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                   colLeads.map((lead) => {
                     const owner = employeeById.get(lead.owner_id);
                     const isOverdue = isNextActionOverdue(lead);
-                    const wResult = getLeadScoreWeight(lead);
+                    const wResult =
+                      weightByLeadId.get(lead.id) ??
+                      getLeadScoreWeight(lead);
 
                     const daysDormant = dormantInfoByLeadId.get(lead.id) ?? 0;
                     const isDormant = daysDormant >= 3 && !['lost', 'enrolled'].includes(lead.stage);
@@ -398,8 +517,20 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                     return (
                       <div
                         key={lead.id}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', lead.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                          setDraggingLeadId(lead.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingLeadId(null);
+                          setDragOverColumn(null);
+                        }}
                         onClick={() => onSelectLead(lead)}
-                        className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs hover:shadow-xs hover:border-blue-400 transition-all cursor-pointer group space-y-2"
+                        className={`bg-white p-3 rounded-lg border border-slate-200 shadow-2xs hover:shadow-xs hover:border-blue-400 transition-all cursor-pointer group space-y-2 ${
+                          draggingLeadId === lead.id ? 'opacity-40' : ''
+                        }`}
                       >
                         {/* Dormancy Warning Pill */}
                         {isDormant && (
@@ -494,7 +625,7 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                               <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
                             </button>
 
-                            {col.id !== 'paid' && col.id !== 'lost' && (
+                            {col.id !== 'enrolled' && col.id !== 'lost' && (
                               <button
                                 type="button"
                                 onClick={(e) => handleAdvance(e, lead)}
@@ -516,6 +647,68 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
           );
         })}
       </div>
+
+      {/* Modal: Lost reason prompt (drop / advance onto Lost) */}
+      {lostTarget && (
+        <div className="fixed inset-0 z-60 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg p-5 max-w-md w-full shadow-xl space-y-4 border border-slate-200">
+            <h3 className="text-sm font-bold text-slate-900">
+              Mark {lostTarget.full_name} as Lost
+            </h3>
+            <p className="text-xs text-slate-600">
+              Select the primary reason why this lead did not convert — this feeds the daily lost-lead audit.
+            </p>
+
+            <form onSubmit={handleConfirmLost} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Lost Reason *
+                </label>
+                <select
+                  value={lostReasonId}
+                  onChange={(e) => setLostReasonId(Number(e.target.value))}
+                  className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-md bg-white"
+                >
+                  {lostReasons.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Explanation Note
+                </label>
+                <textarea
+                  rows={2}
+                  value={lostNote}
+                  onChange={(e) => setLostNote(e.target.value)}
+                  placeholder="Specific student feedback..."
+                  className="w-full text-xs p-2 border border-slate-200 rounded-md"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setLostTarget(null)}
+                  className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-md"
+                >
+                  Confirm Lost
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

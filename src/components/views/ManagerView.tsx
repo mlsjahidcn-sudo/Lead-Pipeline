@@ -3,6 +3,7 @@ import { useCrm } from '../../context/CrmContext';
 import { Lead } from '../../types';
 import { calculateSlaInfo, formatBdDateTime, isNextActionOverdue } from '../../utils/crm-logic';
 import { computeSourceStats, computeCounsellorStats } from '../../utils/analytics';
+import { DuplicateReviewPanel } from './manager/DuplicateReviewPanel';
 import {
   Users,
   AlertTriangle,
@@ -356,6 +357,9 @@ export const ManagerView: React.FC<ManagerViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Duplicate lead review & merge (admin/manager) */}
+      <DuplicateReviewPanel />
 
       {/* Modal: Quick Reassignment */}
       {reassignModalLead && (

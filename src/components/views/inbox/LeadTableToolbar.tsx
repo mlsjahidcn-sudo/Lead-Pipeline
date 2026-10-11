@@ -1,6 +1,8 @@
 import React from 'react';
 import { Search, Filter, X } from 'lucide-react';
 import { Employee, LeadSource } from '../../../types';
+import { SavedViewMenu } from '../../common/SavedViewMenu';
+import { SavedView } from '../../../utils/saved-views';
 import { InboxFilters, InboxTab, Density } from './types';
 
 interface LeadTableToolbarProps {
@@ -14,6 +16,10 @@ interface LeadTableToolbarProps {
   density: Density;
   onToggleDensity: () => void;
   filteredCount: number;
+  savedViews: SavedView[];
+  onSaveView: (name: string) => void;
+  onApplyView: (view: SavedView) => void;
+  onDeleteView: (id: string) => void;
 }
 
 export const LeadTableToolbar: React.FC<LeadTableToolbarProps> = ({
@@ -27,6 +33,10 @@ export const LeadTableToolbar: React.FC<LeadTableToolbarProps> = ({
   density,
   onToggleDensity,
   filteredCount,
+  savedViews,
+  onSaveView,
+  onApplyView,
+  onDeleteView,
 }) => {
   const hasActiveFilters =
     filters.filterOwner !== 'all' ||
@@ -69,6 +79,14 @@ export const LeadTableToolbar: React.FC<LeadTableToolbarProps> = ({
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto">
+          {/* Saved filter views */}
+          <SavedViewMenu
+            views={savedViews}
+            onSave={onSaveView}
+            onApply={onApplyView}
+            onDelete={onDeleteView}
+          />
+
           {/* Density toggle */}
           <div
             className="flex items-center rounded-md border border-slate-200 overflow-hidden shrink-0"

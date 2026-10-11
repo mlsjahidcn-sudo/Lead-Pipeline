@@ -8,6 +8,7 @@ import {
 } from '../../utils/crm-logic';
 import { getLeadLastContacted, calculateDaysDormant } from '../../utils/automated-scheduling';
 import { exportLeadsCsv } from '../../utils/csv';
+import { loadSavedViews, persistSavedView, deleteSavedView, SavedView } from '../../utils/saved-views';
 import { Download } from 'lucide-react';
 import {
   DEFAULT_FILTERS,
@@ -59,6 +60,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
     reassignLead,
     completeTask,
     reopenTask,
+    scheduleFollowUpTask,
     currentEmployee,
     getLeadScoreWeight,
     getLeadActivities,
@@ -75,6 +77,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
   );
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [savedViews, setSavedViews] = useState<SavedView[]>(() => loadSavedViews('inbox'));
 
   // Lost-reason prompt for row/card quick stage changes (audit parity with
   // the lead detail modal — 'lost' is never written without a reason).
@@ -103,6 +106,25 @@ export const InboxView: React.FC<InboxViewProps> = ({
       }
       return next;
     });
+  }, []);
+
+  const handleSaveView = useCallback(
+    (name: string) => {
+      persistSavedView({ name, surface: 'inbox', payload: { filters, sort } });
+      setSavedViews(loadSavedViews('inbox'));
+    },
+    [filters, sort]
+  );
+
+  const handleApplyView = useCallback((view: SavedView) => {
+    const payload = view.payload as { filters?: Partial<InboxFilters>; sort?: SortState };
+    setFilters((prev) => ({ ...prev, ...DEFAULT_FILTERS, ...(payload.filters || {}) }));
+    if (payload.sort) setSort(payload.sort);
+  }, []);
+
+  const handleDeleteView = useCallback((id: string) => {
+    deleteSavedView(id);
+    setSavedViews(loadSavedViews('inbox'));
   }, []);
 
   // Reset the visible window whenever the result set identity changes
@@ -406,6 +428,49 @@ export const InboxView: React.FC<InboxViewProps> = ({
     [selectedIds, reassignLead, clearSelection]
   );
 
+  const handleBulkFollowUp = useCallback(
+    (taskType: string, dueAt: string) => {
+      const targets = [...selectedLeads];
+      for (const l of targets) {
+        scheduleFollowUpTask({
+          leadId: l.id,
+          assignedTo: l.owner_id,
+          taskType,
+          title: `Bulk follow-up (${taskType}) from Inbox`,
+          dueAt,
+          priority: 'medium',
+        });
+      }
+      clearSelection();
+    },
+    [selectedLeads, scheduleFollowUpTask, clearSelection]
+  );
+
+  const handleBulkAddTag = useCallback(
+    (tag: string) => {
+      const clean = tag.trim().replace(/^#/, '');
+      if (!clean) return;
+      for (const l of selectedLeads) {
+        const tags = Array.isArray(l.tags) ? l.tags : [];
+        if (!tags.some((t) => t.toLowerCase() === clean.toLowerCase())) {
+          updateLead(l.id, { tags: [...tags, clean] });
+        }
+      }
+      clearSelection();
+    },
+    [selectedLeads, updateLead, clearSelection]
+  );
+
+  const handleBulkNextAction = useCallback(
+    (iso: string, note: string) => {
+      for (const l of selectedLeads) {
+        updateLead(l.id, { next_action_at: iso, next_action_note: note });
+      }
+      clearSelection();
+    },
+    [selectedLeads, updateLead, clearSelection]
+  );
+
   const handleExportAll = useCallback(() => {
     exportLeadsCsv(sortedLeads, {
       employees,
@@ -482,6 +547,10 @@ export const InboxView: React.FC<InboxViewProps> = ({
         density={density}
         onToggleDensity={toggleDensity}
         filteredCount={filteredLeads.length}
+        savedViews={savedViews}
+        onSaveView={handleSaveView}
+        onApplyView={handleApplyView}
+        onDeleteView={handleDeleteView}
       />
 
       {/* Bulk actions */}
@@ -492,6 +561,9 @@ export const InboxView: React.FC<InboxViewProps> = ({
         onBulkReassign={isManagerOrAdmin ? handleBulkReassign : undefined}
         counsellors={activeCounsellors}
         onExportSelected={handleExportSelected}
+        onBulkFollowUp={handleBulkFollowUp}
+        onBulkAddTag={handleBulkAddTag}
+        onBulkNextAction={handleBulkNextAction}
       />
 
       {/* Quick-complete undo banner */}
