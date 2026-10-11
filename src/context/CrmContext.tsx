@@ -201,6 +201,33 @@ const BootstrapGate: React.FC<{
     );
   }
   if (!isAuthenticated) {
+    // A network/server error while probing the session (API down or
+    // bootstrap failed) must not dead-end into the sign-in form — the
+    // credentials are fine, the server is unreachable.
+    if (error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
+          <div className="max-w-md bg-white border border-rose-200 rounded-xl p-6 space-y-3 shadow-2xs">
+            <div className="flex items-center gap-2 font-semibold text-rose-800">
+              <AlertTriangleIcon /> Cannot reach the CRM server
+            </div>
+            <p className="text-sm text-slate-600 break-words">{error}</p>
+            <p className="text-xs text-slate-500">
+              Make sure the API server is running (port 3002 — start it with{' '}
+              <code className="font-mono bg-slate-100 px-1 rounded">bun run dev</code> or{' '}
+              <code className="font-mono bg-slate-100 px-1 rounded">bun run dev:api</code>), then
+              retry. If you were already signed in, your session is kept — no data is lost.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
     if (!SignInScreen) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-slate-50 font-sans">
